@@ -205,19 +205,20 @@ namespace OpenHardwareMonitor.Utilities {
     }
 
     private void SendJSON(HttpListenerResponse response) {
-
-      string JSON = "{\"id\": 0, \"Text\": \"Sensor\", \"Children\": [";
+      StringBuilder sb = new StringBuilder();
+      sb.Append("{\"id\": 0, \"Text\": \"Sensor\", \"Children\": [");
       nodeCount = 1;
-      JSON += GenerateJSON(root);
-      JSON += "]";
-      JSON += ", \"Min\": \"Min\"";
-      JSON += ", \"Value\": \"Value\"";
-      JSON += ", \"Max\": \"Max\"";
-      JSON += ", \"ImageURL\": \"\"";
-      JSON += "}";
+      GenerateJSON(root, sb);
+      sb.Append("]");
+      sb.Append(", \"Min\": \"Min\"");
+      sb.Append(", \"Value\": \"Value\"");
+      sb.Append(", \"Max\": \"Max\"");
+      sb.Append(", \"ImageURL\": \"\"");
+      sb.Append("}");
 
-      var responseContent = JSON;
+      var responseContent = sb.ToString();
       byte[] buffer = Encoding.UTF8.GetBytes(responseContent);
+
 
       response.AddHeader("Cache-Control", "no-cache");
 
@@ -234,43 +235,42 @@ namespace OpenHardwareMonitor.Utilities {
       response.Close();
     }
 
-    private string GenerateJSON(Node n) {
-      string JSON = "{\"id\": " + nodeCount + ", \"Text\": \"" + n.Text 
-        + "\", \"Children\": [";
+    private void GenerateJSON(Node n, StringBuilder sb) {
+      sb.Append("{\"id\": ").Append(nodeCount).Append(", \"Text\": \"").Append(n.Text).Append("\", \"Children\": [");
       nodeCount++;
 
-      foreach (Node child in n.Nodes)
-        JSON += GenerateJSON(child) + ", ";
-      if (JSON.EndsWith(", "))
-        JSON = JSON.Remove(JSON.LastIndexOf(","));
-      JSON += "]";
+      bool first = true;
+      foreach (Node child in n.Nodes) {
+        if (!first)
+          sb.Append(", ");
+        GenerateJSON(child, sb);
+        first = false;
+      }
+      sb.Append("]");
 
       if (n is SensorNode) {
-        JSON += ", \"Min\": \"" + ((SensorNode)n).Min + "\"";
-        JSON += ", \"Value\": \"" + ((SensorNode)n).Value + "\"";
-        JSON += ", \"Max\": \"" + ((SensorNode)n).Max + "\"";
-        JSON += ", \"ImageURL\": \"images/transparent.png\"";
+        sb.Append(", \"Min\": \"").Append(((SensorNode)n).Min).Append("\"");
+        sb.Append(", \"Value\": \"").Append(((SensorNode)n).Value).Append("\"");
+        sb.Append(", \"Max\": \"").Append(((SensorNode)n).Max).Append("\"");
+        sb.Append(", \"ImageURL\": \"images/transparent.png\"");
       } else if (n is HardwareNode) {
-        JSON += ", \"Min\": \"\"";
-        JSON += ", \"Value\": \"\"";
-        JSON += ", \"Max\": \"\"";
-        JSON += ", \"ImageURL\": \"images_icon/" + 
-          GetHardwareImageFile((HardwareNode)n) + "\"";
+        sb.Append(", \"Min\": \"\"");
+        sb.Append(", \"Value\": \"\"");
+        sb.Append(", \"Max\": \"\"");
+        sb.Append(", \"ImageURL\": \"images_icon/").Append(GetHardwareImageFile((HardwareNode)n)).Append("\"");
       } else if (n is TypeNode) {
-        JSON += ", \"Min\": \"\"";
-        JSON += ", \"Value\": \"\"";
-        JSON += ", \"Max\": \"\"";
-        JSON += ", \"ImageURL\": \"images_icon/" + 
-          GetTypeImageFile((TypeNode)n) + "\"";
+        sb.Append(", \"Min\": \"\"");
+        sb.Append(", \"Value\": \"\"");
+        sb.Append(", \"Max\": \"\"");
+        sb.Append(", \"ImageURL\": \"images_icon/").Append(GetTypeImageFile((TypeNode)n)).Append("\"");
       } else {
-        JSON += ", \"Min\": \"\"";
-        JSON += ", \"Value\": \"\"";
-        JSON += ", \"Max\": \"\"";
-        JSON += ", \"ImageURL\": \"images_icon/computer.png\"";
+        sb.Append(", \"Min\": \"\"");
+        sb.Append(", \"Value\": \"\"");
+        sb.Append(", \"Max\": \"\"");
+        sb.Append(", \"ImageURL\": \"images_icon/computer.png\"");
       }
 
-      JSON += "}";
-      return JSON;
+      sb.Append("}");
     }
 
     private static void ReturnFile(HttpListenerContext context, string filePath) 
