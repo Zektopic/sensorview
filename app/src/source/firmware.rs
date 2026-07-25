@@ -16,6 +16,7 @@
 //! Collected on the slow lane: firmware tables are fixed at boot.
 
 use crate::inventory::{Inventory, InventorySource};
+#[allow(unused_imports)]
 use crate::model::hexblob::{HexBlob, HexRegion, HexSource, RegionKind};
 
 /// Enumerates the machine's firmware tables once per slow-lane pass.
@@ -32,6 +33,7 @@ impl InventorySource for FirmwareTables {
 }
 
 fn read_all() -> Vec<HexBlob> {
+    #[allow(unused_mut)]
     let mut out = Vec::new();
     #[cfg(windows)]
     {
@@ -50,10 +52,12 @@ fn read_all() -> Vec<HexBlob> {
 // ---------------------------------------------------------------------------
 
 /// Length of the standard ACPI System Description Table header.
+#[allow(dead_code)]
 const ACPI_HEADER_LEN: usize = 36;
 
 /// Label the fields of the ACPI header (ACPI spec §21.2.1), so the viewer can
 /// tint them and name whatever is under the cursor.
+#[allow(dead_code)]
 pub fn acpi_header_regions(bytes: &[u8]) -> Vec<HexRegion> {
     if bytes.len() < ACPI_HEADER_LEN {
         return Vec::new();
@@ -114,6 +118,7 @@ pub fn smbios_header_regions(bytes: &[u8]) -> Vec<HexRegion> {
 
 /// ACPI signature/OEM fields are fixed-length ASCII; render them readably and
 /// fall back to hex for the (malformed) non-printable case.
+#[allow(dead_code)]
 pub fn ascii_tag(bytes: &[u8]) -> String {
     if bytes.iter().all(|&b| (0x20..0x7f).contains(&b)) {
         String::from_utf8_lossy(bytes).trim_end().to_string()

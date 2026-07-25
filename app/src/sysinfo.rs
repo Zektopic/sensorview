@@ -58,6 +58,7 @@ fn cpuid_info() -> (String, String, String) {
 }
 
 /// Coarse codename map for recent AMD/Intel desktop parts (best effort).
+#[allow(dead_code)]
 fn codename_for(vendor: &str, family: u32, model: u32) -> String {
     if vendor.contains("AuthenticAMD") {
         match (family, model) {
