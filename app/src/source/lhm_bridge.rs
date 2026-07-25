@@ -38,14 +38,24 @@ struct MetaLine {
 }
 
 pub struct LhmBridge {
-    child: Child,
+    child: Option<Child>,
     latest: Arc<Mutex<Vec<Hardware>>>,
     meta: Arc<Mutex<Option<BridgeMeta>>>,
+    error_msg: String,
 }
 
 const SIDECAR_EXE: &str = "sensorview-bridge.exe";
 
 impl LhmBridge {
+    pub fn empty(err: String) -> Self {
+        Self {
+            child: None,
+            latest: Arc::new(Mutex::new(Vec::new())),
+            meta: Arc::new(Mutex::new(None)),
+            error_msg: err,
+        }
+    }
+
     /// Spawn the sidecar and wait (briefly) for its first snapshot.
     pub fn spawn() -> Result<Self, String> {
         let exe = find_sidecar().ok_or_else(|| format!("{SIDECAR_EXE} not found"))?;
@@ -102,7 +112,12 @@ impl LhmBridge {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if !latest.lock().map(|t| t.is_empty()).unwrap_or(true) {
-                return Ok(Self { child, latest, meta });
+                return Ok(Self {
+                    child: Some(child),
+                    latest,
+                    meta,
+                    error_msg: String::new(),
+                });
             }
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(format!("sidecar exited early: {status}"));
@@ -127,21 +142,28 @@ impl super::SensorSource for LhmBridge {
 
     fn diagnostics(&self) -> super::Diagnostics {
         let meta = self.meta.lock().ok().and_then(|m| m.clone()).unwrap_or_default();
+        let driver_report = if !self.error_msg.is_empty() {
+            format!("Bridge error: {}", self.error_msg)
+        } else {
+            meta.ring0_report
+        };
         super::Diagnostics {
             engine_version: if meta.lhm_version.is_empty() {
                 String::new()
             } else {
                 format!("LibreHardwareMonitor {}", meta.lhm_version)
             },
-            driver_report: meta.ring0_report,
+            driver_report,
         }
     }
 }
 
 impl Drop for LhmBridge {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 }
 
@@ -172,10 +194,29 @@ fn find_sidecar() -> Option<PathBuf> {
             candidates.push(dir.join("sidecar").join(SIDECAR_EXE));
         }
     }
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        manifest_dir
             .join("sidecar")
             .join("publish")
+            .join(SIDECAR_EXE),
+    );
+    candidates.push(
+        manifest_dir
+            .join("sidecar")
+            .join("bin")
+            .join("Release")
+            .join("net8.0")
+            .join("win-x64")
+            .join(SIDECAR_EXE),
+    );
+    candidates.push(
+        manifest_dir
+            .join("sidecar")
+            .join("bin")
+            .join("Debug")
+            .join("net8.0")
+            .join("win-x64")
             .join(SIDECAR_EXE),
     );
     candidates.into_iter().find(|p| p.is_file())

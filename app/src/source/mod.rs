@@ -58,9 +58,15 @@ pub fn default_source() -> Box<dyn SensorSource> {
     #[cfg(windows)]
     {
         match lhm_bridge::LhmBridge::spawn() {
-            Ok(bridge) => return Box::new(bridge),
-            Err(e) => eprintln!("LHM bridge unavailable ({e}); falling back to demo data"),
+            Ok(bridge) => Box::new(bridge),
+            Err(e) => {
+                eprintln!("LHM bridge error: {e}");
+                Box::new(lhm_bridge::LhmBridge::empty(e))
+            }
         }
     }
-    Box::new(demo::DemoSource::new())
+    #[cfg(not(windows))]
+    {
+        Box::new(demo::DemoSource::new())
+    }
 }
