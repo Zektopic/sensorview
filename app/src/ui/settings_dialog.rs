@@ -343,6 +343,37 @@ fn driver_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette) {
         );
     }
 
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if ui
+            .button(RichText::new("⚡ Install / Reinstall PawnIO Driver").color(pal.accent))
+            .clicked()
+        {
+            let setup_path = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("resources").join("PawnIO_setup.exe")))
+                .unwrap_or_else(|| std::path::PathBuf::from("resources/PawnIO_setup.exe"));
+            let setup = if setup_path.exists() {
+                setup_path
+            } else {
+                std::path::PathBuf::from("resources/PawnIO_setup.exe")
+            };
+            if setup.exists() {
+                let _ = std::process::Command::new("powershell")
+                    .args([
+                        "-Command",
+                        &format!("Start-Process -FilePath '{}' -Verb RunAs", setup.display()),
+                    ])
+                    .spawn();
+            } else {
+                let _ = std::process::Command::new("powershell")
+                    .args(["-Command", "Start-Process 'https://pawnio.eu/'"])
+                    .spawn();
+            }
+        }
+        ui.hyperlink_to("PawnIO Website", "https://pawnio.eu/");
+    });
+
     // Raw driver report for troubleshooting.
     if !diag.driver_report.is_empty() && diag.driver_report != "(no ring0 section in report)" {
         ui.add_space(8.0);
