@@ -65,6 +65,25 @@ pub fn show(ui: &mut egui::Ui, s: &Shared, state: &mut MainWindowState) {
                     if ui.button(RichText::new("Settings").size(11.0)).clicked() {
                         WindowFlags::open(&s.windows.settings);
                     }
+                    let font_scale = s.settings.read().map(|st| st.font_scale).unwrap_or(1.0);
+                    if ui.button(RichText::new("🔍+").size(11.0)).on_hover_text("Zoom In").clicked() {
+                        if let Ok(mut st) = s.settings.write() {
+                            st.font_scale = (st.font_scale + 0.1).clamp(0.75, 2.0);
+                            st.save();
+                        }
+                    }
+                    if ui.button(RichText::new(format!("{:.0}%", font_scale * 100.0)).size(10.5)).on_hover_text("Reset Zoom to 100%").clicked() {
+                        if let Ok(mut st) = s.settings.write() {
+                            st.font_scale = 1.0;
+                            st.save();
+                        }
+                    }
+                    if ui.button(RichText::new("🔍-").size(11.0)).on_hover_text("Zoom Out").clicked() {
+                        if let Ok(mut st) = s.settings.write() {
+                            st.font_scale = (st.font_scale - 0.1).clamp(0.75, 2.0);
+                            st.save();
+                        }
+                    }
                 });
             });
         });

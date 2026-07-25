@@ -56,6 +56,9 @@ pub struct AppSettings {
     pub web_port: u16,
     // UI state carried across runs.
     pub collapsed_groups: BTreeSet<String>,
+    pub font_scale: f32,
+    pub sensor_col_width: f32,
+    pub val_col_width: f32,
 }
 
 impl Default for AppSettings {
@@ -87,6 +90,9 @@ impl Default for AppSettings {
             web_lan_access: false,
             web_port: 8080,
             collapsed_groups: BTreeSet::new(),
+            font_scale: 1.0,
+            sensor_col_width: 220.0,
+            val_col_width: 90.0,
         }
     }
 }

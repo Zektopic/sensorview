@@ -18,23 +18,40 @@ enum Item {
     Row(Sensor),
 }
 
-fn draw_column_header(ui: &mut egui::Ui, col_w: f32, pal: &Palette) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(col_w, 18.0), Sense::hover());
+fn draw_column_header(ui: &mut egui::Ui, col_w: f32, sensor_name_w: f32, font_scale: f32, s: &Shared, pal: &Palette) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(col_w, 18.0 * font_scale), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 0.0, pal.bg_header);
-    p.text(Pos2::new(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, "Sensor", FontId::proportional(11.0), pal.text_dim);
-    let val_area = (col_w - 150.0).max(120.0);
+
+    // Draggable separator handle between Sensor column and values
+    let handle_x = rect.left() + sensor_name_w;
+    let handle_rect = egui::Rect::from_min_max(Pos2::new(handle_x - 3.0, rect.top()), Pos2::new(handle_x + 3.0, rect.bottom()));
+    let handle_resp = ui.interact(handle_rect, ui.id().with("col_drag_hdr"), Sense::drag());
+    if handle_resp.dragged() {
+        let delta_x = handle_resp.drag_delta().x;
+        if let Ok(mut st) = s.settings.write() {
+            st.sensor_col_width = (st.sensor_col_width + delta_x).clamp(100.0, 450.0);
+            st.save();
+        }
+    }
+    if handle_resp.hovered() || handle_resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+        p.line_segment([Pos2::new(handle_x, rect.top()), Pos2::new(handle_x, rect.bottom())], Stroke::new(1.5, pal.accent));
+    }
+
+    p.text(Pos2::new(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, "Sensor", FontId::proportional(11.0 * font_scale), pal.text_dim);
+    let val_area = (col_w - sensor_name_w).max(120.0);
     let col_w_step = val_area / 4.0;
-    p.text(Pos2::new(rect.left() + 150.0 + col_w_step * 1.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Current", FontId::proportional(11.0), pal.text_dim);
-    p.text(Pos2::new(rect.left() + 150.0 + col_w_step * 2.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Minimum", FontId::proportional(11.0), pal.text_dim);
-    p.text(Pos2::new(rect.left() + 150.0 + col_w_step * 3.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Maximum", FontId::proportional(11.0), pal.text_dim);
-    p.text(Pos2::new(rect.left() + 150.0 + col_w_step * 4.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Average", FontId::proportional(11.0), pal.text_dim);
+    p.text(Pos2::new(rect.left() + sensor_name_w + col_w_step * 1.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Current", FontId::proportional(11.0 * font_scale), pal.text_dim);
+    p.text(Pos2::new(rect.left() + sensor_name_w + col_w_step * 2.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Minimum", FontId::proportional(11.0 * font_scale), pal.text_dim);
+    p.text(Pos2::new(rect.left() + sensor_name_w + col_w_step * 3.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Maximum", FontId::proportional(11.0 * font_scale), pal.text_dim);
+    p.text(Pos2::new(rect.left() + sensor_name_w + col_w_step * 4.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Average", FontId::proportional(11.0 * font_scale), pal.text_dim);
 }
 
-fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, s: &Shared, pal: &Palette) {
+fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, sensor_name_w: f32, font_scale: f32, s: &Shared, pal: &Palette) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
-        draw_column_header(ui, col_w, pal);
+        draw_column_header(ui, col_w, sensor_name_w, font_scale, s, pal);
         let mut stripe = 0usize;
         for item in items {
             match item {
@@ -52,7 +69,7 @@ fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, s: &Shared, pal: &
                     stripe = 0;
                 }
                 Item::Row(sensor) => {
-                    draw_row(ui, sensor, col_w, stripe, s, pal);
+                    draw_row(ui, sensor, col_w, sensor_name_w, font_scale, stripe, s, pal);
                     stripe += 1;
                 }
             }
@@ -60,8 +77,9 @@ fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, s: &Shared, pal: &
     });
 }
 
-fn draw_row(ui: &mut egui::Ui, sensor: &Sensor, col_w: f32, stripe: usize, s: &Shared, pal: &Palette) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(col_w, ROW_H), Sense::click());
+fn draw_row(ui: &mut egui::Ui, sensor: &Sensor, col_w: f32, sensor_name_w: f32, font_scale: f32, stripe: usize, s: &Shared, pal: &Palette) {
+    let row_h = ROW_H * font_scale;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(col_w, row_h), Sense::click());
     let p = ui.painter();
     let bg = if stripe.is_multiple_of(2) { pal.row_even } else { pal.row_odd };
     p.rect_filled(rect, 0.0, bg);
@@ -71,17 +89,17 @@ fn draw_row(ui: &mut egui::Ui, sensor: &Sensor, col_w: f32, stripe: usize, s: &S
     paint_icon(p, icon_center, sensor.sensor_type, pal);
 
     // Sensor name left-aligned.
-    let name_max_w = 140.0;
+    let name_max_w = sensor_name_w - 20.0;
     p.text(
         Pos2::new(rect.left() + 20.0, rect.center().y),
         Align2::LEFT_CENTER,
-        truncate(&sensor.name, (name_max_w / 5.8) as usize),
-        FontId::proportional(11.0),
+        truncate(&sensor.name, (name_max_w / (5.8 * font_scale)) as usize),
+        FontId::proportional(11.0 * font_scale),
         pal.text,
     );
 
     // 4 Columns: Current | Minimum | Maximum | Average
-    let val_area = (col_w - 150.0).max(120.0);
+    let val_area = (col_w - sensor_name_w).max(120.0);
     let col_w_step = val_area / 4.0;
     let value_color = value_severity_color(sensor, pal);
 
@@ -91,31 +109,31 @@ fn draw_row(ui: &mut egui::Ui, sensor: &Sensor, col_w: f32, stripe: usize, s: &S
     let val_avg = widgets::format_value(sensor.avg, sensor.sensor_type);
 
     p.text(
-        Pos2::new(rect.left() + 150.0 + col_w_step * 1.0 - 4.0, rect.center().y),
+        Pos2::new(rect.left() + sensor_name_w + col_w_step * 1.0 - 4.0, rect.center().y),
         Align2::RIGHT_CENTER,
         &val_cur,
-        FontId::monospace(10.0),
+        FontId::monospace(10.0 * font_scale),
         value_color,
     );
     p.text(
-        Pos2::new(rect.left() + 150.0 + col_w_step * 2.0 - 4.0, rect.center().y),
+        Pos2::new(rect.left() + sensor_name_w + col_w_step * 2.0 - 4.0, rect.center().y),
         Align2::RIGHT_CENTER,
         &val_min,
-        FontId::monospace(10.0),
+        FontId::monospace(10.0 * font_scale),
         pal.text_dim,
     );
     p.text(
-        Pos2::new(rect.left() + 150.0 + col_w_step * 3.0 - 4.0, rect.center().y),
+        Pos2::new(rect.left() + sensor_name_w + col_w_step * 3.0 - 4.0, rect.center().y),
         Align2::RIGHT_CENTER,
         &val_max,
-        FontId::monospace(10.0),
+        FontId::monospace(10.0 * font_scale),
         pal.text_dim,
     );
     p.text(
-        Pos2::new(rect.left() + 150.0 + col_w_step * 4.0 - 4.0, rect.center().y),
+        Pos2::new(rect.left() + sensor_name_w + col_w_step * 4.0 - 4.0, rect.center().y),
         Align2::RIGHT_CENTER,
         &val_avg,
-        FontId::monospace(10.0),
+        FontId::monospace(10.0 * font_scale),
         pal.text_dim,
     );
 
@@ -151,6 +169,12 @@ pub fn show(ui: &mut egui::Ui, s: &Shared) {
 
     let frame = s.frame();
     let tree = &frame.tree;
+
+    let font_scale = s
+        .settings
+        .read()
+        .map(|st| st.font_scale)
+        .unwrap_or(1.0);
 
     // Diagnostic banner for the "0 W / 0 MHz" case.
     let warmed_up = s.started.elapsed().as_secs() >= 4;
@@ -241,6 +265,27 @@ pub fn show(ui: &mut egui::Ui, s: &Shared) {
                             .size(11.0),
                     )
                     .on_hover_text(path);
+                }
+
+                // Magnifying glass font size zoom buttons
+                ui.add_space(8.0);
+                if ui.button(RichText::new("🔍-").size(11.0)).on_hover_text("Zoom Out (Smaller Font)").clicked() {
+                    if let Ok(mut st) = s.settings.write() {
+                        st.font_scale = (st.font_scale - 0.1).clamp(0.75, 2.0);
+                        st.save();
+                    }
+                }
+                if ui.button(RichText::new(format!("{:.0}%", font_scale * 100.0)).size(10.5)).on_hover_text("Reset Font Size to 100%").clicked() {
+                    if let Ok(mut st) = s.settings.write() {
+                        st.font_scale = 1.0;
+                        st.save();
+                    }
+                }
+                if ui.button(RichText::new("🔍+").size(11.0)).on_hover_text("Zoom In (Larger Font)").clicked() {
+                    if let Ok(mut st) = s.settings.write() {
+                        st.font_scale = (st.font_scale + 0.1).clamp(0.75, 2.0);
+                        st.save();
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -382,10 +427,17 @@ fn build_items(tree: &[Hardware], s: &Shared) -> Vec<Item> {
 }
 
 fn flow_columns(ui: &mut egui::Ui, items: &[Item], s: &Shared, pal: &Palette) {
+    let (font_scale, sensor_name_w) = s
+        .settings
+        .read()
+        .map(|st| (st.font_scale, st.sensor_col_width))
+        .unwrap_or((1.0, 170.0));
     let avail = ui.available_size();
-    let n_cols = ((avail.x / COL_MIN_W).floor() as usize).max(1);
+    let col_min_w = (COL_MIN_W * font_scale).max(300.0);
+    let n_cols = ((avail.x / col_min_w).floor() as usize).max(1);
     let col_w = (avail.x / n_cols as f32).floor();
-    let rows_per_col = ((avail.y - 4.0) / ROW_H).floor().max(4.0) as usize;
+    let row_h = ROW_H * font_scale;
+    let rows_per_col = ((avail.y - 4.0) / row_h).floor().max(4.0) as usize;
 
     // Overflow beyond the visible columns scrolls horizontally, like HWiNFO.
     egui::ScrollArea::horizontal().show(ui, |ui| {
@@ -395,7 +447,7 @@ fn flow_columns(ui: &mut egui::Ui, items: &[Item], s: &Shared, pal: &Palette) {
             let mut col = 0usize;
             while idx < items.len() {
                 let end = (idx + rows_per_col).min(items.len());
-                draw_column(ui, &items[idx..end], col_w, s, pal);
+                draw_column(ui, &items[idx..end], col_w, sensor_name_w, font_scale, s, pal);
                 // Column separator.
                 let sep_rect = ui.allocate_exact_size(Vec2::new(1.0, avail.y), Sense::hover()).0;
                 ui.painter().rect_filled(sep_rect, 0.0, pal.grid);
