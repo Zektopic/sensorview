@@ -159,6 +159,7 @@ fn metric_name(t: SensorType) -> &'static str {
         SensorType::Noise => "sensorview_noise_decibels",
         SensorType::Conductivity => "sensorview_conductivity_microsiemens_per_cm",
         SensorType::Humidity => "sensorview_humidity_percent",
+        _ => "sensorview_unknown",
     }
 }
 
@@ -184,6 +185,7 @@ fn type_label(t: SensorType) -> &'static str {
         SensorType::Noise => "Noise",
         SensorType::Conductivity => "Conductivity",
         SensorType::Humidity => "Humidity",
+        _ => "Unknown",
     }
 }
 

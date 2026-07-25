@@ -352,24 +352,27 @@ fn build_items(tree: &[Hardware], s: &Shared) -> Vec<Item> {
         .unwrap_or_default();
     let mut items = Vec::new();
     fn add(hw: &Hardware, items: &mut Vec<Item>, collapsed_set: &std::collections::BTreeSet<String>) {
-        // Skip empty groups (e.g. Mainboard without admin) like HWiNFO hides them.
         if hw.sensors.is_empty() && hw.sub_hardware.is_empty() {
             return;
         }
         let collapsed = collapsed_set.contains(&hw.identifier);
-        items.push(Item::Header {
-            title: group_title(hw),
-            id: hw.identifier.clone(),
-            hw_type: hw.hardware_type,
-            collapsed,
-        });
-        if !collapsed {
-            for sensor in &hw.sensors {
-                items.push(Item::Row(sensor.clone()));
+        if !hw.sensors.is_empty() {
+            items.push(Item::Header {
+                title: group_title(hw),
+                id: hw.identifier.clone(),
+                hw_type: hw.hardware_type,
+                collapsed,
+            });
+            if !collapsed {
+                for sensor in &hw.sensors {
+                    items.push(Item::Row(sensor.clone()));
+                }
             }
         }
-        for sub in &hw.sub_hardware {
-            add(sub, items, collapsed_set);
+        if !collapsed {
+            for sub in &hw.sub_hardware {
+                add(sub, items, collapsed_set);
+            }
         }
     }
     for hw in tree {

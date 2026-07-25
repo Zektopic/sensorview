@@ -37,6 +37,8 @@ pub enum SensorType {
     Noise,        // dBA
     Conductivity, // µS/cm
     Humidity,     // %
+    #[serde(other)]
+    Unknown,
 }
 
 impl SensorType {
@@ -63,6 +65,7 @@ impl SensorType {
             SensorType::Noise => "dBA",
             SensorType::Conductivity => "µS/cm",
             SensorType::Humidity => "%",
+            SensorType::Unknown => "",
         }
     }
 }
@@ -71,15 +74,20 @@ impl SensorType {
 /// with LibreHardwareMonitor's categories so the LHM bridge can map 1:1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HardwareType {
+    #[serde(alias = "Motherboard")]
     Mainboard,
     SuperIO,
+    #[serde(alias = "CPU")]
     Cpu,
+    #[serde(alias = "RAM", alias = "Memory")]
     Ram,
     GpuNvidia,
+    #[serde(alias = "GpuAmd", alias = "GpuAti")]
     GpuAti,
     GpuIntel,
     TBalancer,
     Heatmaster,
+    #[serde(alias = "HDD")]
     Hdd,
     Storage,
     Network,
@@ -87,6 +95,8 @@ pub enum HardwareType {
     EmbeddedController,
     Psu,
     Battery,
+    #[serde(other)]
+    Unknown,
 }
 
 /// A single sensor reading with running statistics.
