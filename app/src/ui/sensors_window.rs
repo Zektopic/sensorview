@@ -11,11 +11,138 @@ use super::widgets::{self, ROW_H};
 use super::{Palette, Shared, WindowFlags};
 use crate::model::{Hardware, HardwareType, Sensor, SensorType};
 
-const COL_MIN_W: f32 = 250.0;
+const COL_MIN_W: f32 = 380.0;
 
 enum Item {
     Header { title: String, id: String, hw_type: HardwareType, collapsed: bool },
     Row(Sensor),
+}
+
+fn draw_column_header(ui: &mut egui::Ui, col_w: f32, pal: &Palette) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(col_w, 18.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, pal.bg_header);
+    p.text(Pos2::new(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, "Sensor", FontId::proportional(11.0), pal.text_dim);
+    let val_area = (col_w - 150.0).max(120.0);
+    let col_w_step = val_area / 4.0;
+    p.text(Pos2::new(rect.left() + 150.0 + col_w_step * 1.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Current", FontId::proportional(11.0), pal.text_dim);
+    p.text(Pos2::new(rect.left() + 150.0 + col_w_step * 2.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Minimum", FontId::proportional(11.0), pal.text_dim);
+    p.text(Pos2::new(rect.left() + 150.0 + col_w_step * 3.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Maximum", FontId::proportional(11.0), pal.text_dim);
+    p.text(Pos2::new(rect.left() + 150.0 + col_w_step * 4.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Average", FontId::proportional(11.0), pal.text_dim);
+}
+
+fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, s: &Shared, pal: &Palette) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        draw_column_header(ui, col_w, pal);
+        let mut stripe = 0usize;
+        for item in items {
+            match item {
+                Item::Header { title, id, hw_type, collapsed } => {
+                    if let Some(new_state) = widgets::group_header(ui, title, *hw_type, *collapsed, col_w, pal) {
+                        if let Ok(mut st) = s.settings.write() {
+                            if new_state {
+                                st.collapsed_groups.insert(id.clone());
+                            } else {
+                                st.collapsed_groups.remove(id);
+                            }
+                            st.save();
+                        }
+                    }
+                    stripe = 0;
+                }
+                Item::Row(sensor) => {
+                    draw_row(ui, sensor, col_w, stripe, s, pal);
+                    stripe += 1;
+                }
+            }
+        }
+    });
+}
+
+fn draw_row(ui: &mut egui::Ui, sensor: &Sensor, col_w: f32, stripe: usize, s: &Shared, pal: &Palette) {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(col_w, ROW_H), Sense::click());
+    let p = ui.painter();
+    let bg = if stripe.is_multiple_of(2) { pal.row_even } else { pal.row_odd };
+    p.rect_filled(rect, 0.0, bg);
+
+    // Type icon.
+    let icon_center = Pos2::new(rect.left() + 10.0, rect.center().y);
+    paint_icon(p, icon_center, sensor.sensor_type, pal);
+
+    // Sensor name left-aligned.
+    let name_max_w = 140.0;
+    p.text(
+        Pos2::new(rect.left() + 20.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        truncate(&sensor.name, (name_max_w / 5.8) as usize),
+        FontId::proportional(11.0),
+        pal.text,
+    );
+
+    // 4 Columns: Current | Minimum | Maximum | Average
+    let val_area = (col_w - 150.0).max(120.0);
+    let col_w_step = val_area / 4.0;
+    let value_color = value_severity_color(sensor, pal);
+
+    let val_cur = widgets::format_value(sensor.value, sensor.sensor_type);
+    let val_min = widgets::format_value(sensor.min, sensor.sensor_type);
+    let val_max = widgets::format_value(sensor.max, sensor.sensor_type);
+    let val_avg = widgets::format_value(sensor.avg, sensor.sensor_type);
+
+    p.text(
+        Pos2::new(rect.left() + 150.0 + col_w_step * 1.0 - 4.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        &val_cur,
+        FontId::monospace(10.0),
+        value_color,
+    );
+    p.text(
+        Pos2::new(rect.left() + 150.0 + col_w_step * 2.0 - 4.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        &val_min,
+        FontId::monospace(10.0),
+        pal.text_dim,
+    );
+    p.text(
+        Pos2::new(rect.left() + 150.0 + col_w_step * 3.0 - 4.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        &val_max,
+        FontId::monospace(10.0),
+        pal.text_dim,
+    );
+    p.text(
+        Pos2::new(rect.left() + 150.0 + col_w_step * 4.0 - 4.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        &val_avg,
+        FontId::monospace(10.0),
+        pal.text_dim,
+    );
+
+    let graphed = s
+        .graphs
+        .read()
+        .map(|g| g.contains(&sensor.identifier))
+        .unwrap_or(false);
+
+    resp.clone().on_hover_ui(|ui| {
+        ui.label(RichText::new(&sensor.name).strong());
+        ui.label(format!(
+            "Current: {}   Min: {}   Max: {}   Avg: {}",
+            val_cur, val_min, val_max, val_avg
+        ));
+        ui.label(RichText::new("Right-click to toggle graph").italics().weak());
+    });
+
+    resp.context_menu(|ui| {
+        let label = if graphed { "Hide Graph" } else { "Show Graph" };
+        if ui.button(label).clicked() {
+            toggle_graph(s, &sensor.identifier, graphed);
+        }
+    });
+    if resp.clicked() {
+        toggle_graph(s, &sensor.identifier, graphed);
+    }
 }
 
 pub fn show(ui: &mut egui::Ui, s: &Shared) {
@@ -94,7 +221,7 @@ pub fn show(ui: &mut egui::Ui, s: &Shared) {
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("⏱").size(12.0));
+                ui.label(RichText::new("Uptime:").size(11.0).color(pal.text_dim));
                 ui.label(RichText::new(s.uptime_text()).color(pal.text_dim).size(11.0));
 
                 // Logging status text.
@@ -118,21 +245,21 @@ pub fn show(ui: &mut egui::Ui, s: &Shared) {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button(RichText::new("✕").color(pal.accent).size(12.0))
-                        .on_hover_text("Close")
+                        .button(RichText::new("Close").color(pal.accent).size(11.0))
+                        .on_hover_text("Close Sensors Window")
                         .clicked()
                     {
                         WindowFlags::close(&s.windows.sensors);
                     }
                     if ui
-                        .button(RichText::new("⚙").size(12.0))
+                        .button(RichText::new("Settings").size(11.0))
                         .on_hover_text("Settings")
                         .clicked()
                     {
                         WindowFlags::open(&s.windows.settings);
                     }
                     // CSV logging toggle.
-                    let log_label = if logging { "■ Stop Logging" } else { "📄 Start Logging" };
+                    let log_label = if logging { "Stop Logging" } else { "Start Logging" };
                     let log_col = if logging { pal.crit } else { pal.text };
                     if ui.button(RichText::new(log_label).color(log_col).size(11.0)).clicked() {
                         if let Ok(mut slot) = s.logger.lock() {
@@ -277,91 +404,7 @@ fn flow_columns(ui: &mut egui::Ui, items: &[Item], s: &Shared, pal: &Palette) {
     });
 }
 
-fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, s: &Shared, pal: &Palette) {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing = Vec2::ZERO;
-        let mut stripe = 0usize;
-        for item in items {
-            match item {
-                Item::Header { title, id, hw_type, collapsed } => {
-                    if let Some(new_state) = widgets::group_header(ui, title, *hw_type, *collapsed, col_w, pal) {
-                        if let Ok(mut st) = s.settings.write() {
-                            if new_state {
-                                st.collapsed_groups.insert(id.clone());
-                            } else {
-                                st.collapsed_groups.remove(id);
-                            }
-                            st.save();
-                        }
-                    }
-                    stripe = 0;
-                }
-                Item::Row(sensor) => {
-                    draw_row(ui, sensor, col_w, stripe, s, pal);
-                    stripe += 1;
-                }
-            }
-        }
-    });
-}
 
-fn draw_row(ui: &mut egui::Ui, sensor: &Sensor, col_w: f32, stripe: usize, s: &Shared, pal: &Palette) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(col_w, ROW_H), Sense::click());
-    let p = ui.painter();
-    let bg = if stripe.is_multiple_of(2) { pal.row_even } else { pal.row_odd };
-    p.rect_filled(rect, 0.0, bg);
-
-    // Type icon.
-    let icon_center = Pos2::new(rect.left() + 10.0, rect.center().y);
-    paint_icon(p, icon_center, sensor.sensor_type, pal);
-
-    // Name (truncated to leave room for the value).
-    let value_text = widgets::format_value(sensor.value, sensor.sensor_type);
-    let value_color = value_severity_color(sensor, pal);
-    p.text(
-        Pos2::new(rect.left() + 20.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        truncate(&sensor.name, ((col_w - 90.0) / 5.6) as usize),
-        FontId::proportional(11.0),
-        pal.text,
-    );
-    p.text(
-        Pos2::new(rect.right() - 6.0, rect.center().y),
-        Align2::RIGHT_CENTER,
-        &value_text,
-        FontId::monospace(10.5),
-        value_color,
-    );
-
-    let graphed = s
-        .graphs
-        .read()
-        .map(|g| g.contains(&sensor.identifier))
-        .unwrap_or(false);
-
-    resp.clone().on_hover_ui(|ui| {
-        ui.label(RichText::new(&sensor.name).strong());
-        ui.label(format!(
-            "Current: {}   Min: {}   Max: {}   Avg: {}",
-            widgets::format_value(sensor.value, sensor.sensor_type),
-            widgets::format_value(sensor.min, sensor.sensor_type),
-            widgets::format_value(sensor.max, sensor.sensor_type),
-            widgets::format_value(sensor.avg, sensor.sensor_type),
-        ));
-        ui.label(RichText::new("Right-click for graph").italics().weak());
-    });
-
-    // Left- or right-click → toggle this sensor's graph window.
-    resp.context_menu(|ui| {
-        let label = if graphed { "Hide Graph" } else { "Show Graph" };
-        if ui.button(label).clicked() {
-            toggle_graph(s, &sensor.identifier, graphed);
-        }
-    });
-    if resp.clicked() {
-        toggle_graph(s, &sensor.identifier, graphed);
-    }
-}
 
 fn toggle_graph(s: &Shared, identifier: &str, currently_open: bool) {
     if let Ok(mut set) = s.graphs.write() {

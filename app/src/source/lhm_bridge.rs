@@ -106,9 +106,9 @@ impl LhmBridge {
             }
         });
 
-        // LHM's Computer.Open() enumerates all buses; give it a moment. If the
-        // sidecar dies or stays silent, report failure so the caller can fall
-        // back to another source.
+        // LHM's Computer.Open() enumerates all buses; give it a moment. Return
+        // Ok even if initial enumeration is still completing so the background
+        // reader thread populates `latest` as soon as the first snapshot lands.
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if !latest.lock().map(|t| t.is_empty()).unwrap_or(true) {
@@ -123,8 +123,12 @@ impl LhmBridge {
                 return Err(format!("sidecar exited early: {status}"));
             }
             if Instant::now() >= deadline {
-                let _ = child.kill();
-                return Err("sidecar produced no snapshot within 15 s".into());
+                return Ok(Self {
+                    child: Some(child),
+                    latest,
+                    meta,
+                    error_msg: String::new(),
+                });
             }
             std::thread::sleep(Duration::from_millis(100));
         }

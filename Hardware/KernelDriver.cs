@@ -1,4 +1,4 @@
-﻿/*
+/*
  
   This Source Code Form is subject to the terms of the Mozilla Public
   License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -65,6 +65,13 @@ namespace OpenHardwareMonitor.Hardware {
       NativeMethods.CloseServiceHandle(service);
       NativeMethods.CloseServiceHandle(manager);
       
+      try {
+        // Restrict the driver access to system (SY) and builtin admins (BA)
+        FileSecurity fileSecurity = File.GetAccessControl(@"\\.\" + id);
+        fileSecurity.SetSecurityDescriptorSddlForm(
+          "O:BAG:SYD:(A;;FA;;;SY)(A;;FA;;;BA)");
+        File.SetAccessControl(@"\\.\" + id, fileSecurity);
+      } catch { }
 
       errorMessage = null;
       return true;

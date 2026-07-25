@@ -2,7 +2,7 @@
 //! Sensors / Memory / About), device tree on the left, "Feature" detail pane
 //! on the right, machine-name status bar.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Align2, FontId, RichText};
 
 use super::widgets::{badge, info_row};
 use super::{Palette, Shared, WindowFlags};
@@ -38,10 +38,10 @@ pub fn show(ui: &mut egui::Ui, s: &Shared, state: &mut MainWindowState) {
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                if tool_button(ui, "🖥", "Summary", &pal) {
+                if tool_button(ui, ToolIcon::Summary, "Summary", &pal) {
                     WindowFlags::open(&s.windows.summary);
                 }
-                if tool_button(ui, "💾", "Save Report", &pal) {
+                if tool_button(ui, ToolIcon::Save, "Save Report", &pal) {
                     let frame = s.frame();
                     let info = s.sysinfo.read().ok().and_then(|i| i.clone());
                     match crate::report::write_report(&frame.tree, info.as_ref()) {
@@ -49,20 +49,20 @@ pub fn show(ui: &mut egui::Ui, s: &Shared, state: &mut MainWindowState) {
                         Err(e) => state.last_report = Some(format!("Report failed: {e}")),
                     }
                 }
-                if tool_button(ui, "🌡", "Sensors", &pal) {
+                if tool_button(ui, ToolIcon::Sensors, "Sensors", &pal) {
                     WindowFlags::open(&s.windows.sensors);
                 }
-                if tool_button(ui, "▤", "Memory", &pal) {
+                if tool_button(ui, ToolIcon::Memory, "Memory", &pal) {
                     state.selected = Selection::Memory;
                 }
-                if tool_button(ui, "0x", "Hex", &pal) {
+                if tool_button(ui, ToolIcon::Hex, "Hex", &pal) {
                     WindowFlags::open(&s.windows.hex);
                 }
-                if tool_button(ui, "ℹ", "About", &pal) {
+                if tool_button(ui, ToolIcon::About, "About", &pal) {
                     state.show_about = true;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(RichText::new("⚙ Settings").size(11.0)).clicked() {
+                    if ui.button(RichText::new("Settings").size(11.0)).clicked() {
                         WindowFlags::open(&s.windows.settings);
                     }
                 });
@@ -181,15 +181,56 @@ Change the port in Settings → Remote Access,                              or s
     }
 }
 
-fn tool_button(ui: &mut egui::Ui, icon: &str, label: &str, pal: &Palette) -> bool {
-    ui.add(
-        egui::Button::new(
-            RichText::new(format!("{icon}\n{label}")).size(11.0).color(pal.text),
-        )
-        .fill(Color32::TRANSPARENT)
-        .min_size(egui::vec2(64.0, 40.0)),
-    )
-    .clicked()
+#[derive(Copy, Clone)]
+enum ToolIcon {
+    Summary,
+    Save,
+    Sensors,
+    Memory,
+    Hex,
+    About,
+}
+
+fn tool_button(ui: &mut egui::Ui, icon: ToolIcon, label: &str, pal: &Palette) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(60.0, 36.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, pal.row_odd);
+    }
+    let p = ui.painter();
+    let c = egui::pos2(rect.center().x, rect.top() + 11.0);
+    match icon {
+        ToolIcon::Summary => {
+            let r = egui::Rect::from_center_size(c, egui::vec2(12.0, 9.0));
+            p.rect_stroke(r, 1.0, egui::Stroke::new(1.2, pal.accent), egui::StrokeKind::Inside);
+        }
+        ToolIcon::Save => {
+            let r = egui::Rect::from_center_size(c, egui::vec2(10.0, 10.0));
+            p.rect_stroke(r, 1.0, egui::Stroke::new(1.2, pal.ok_badge), egui::StrokeKind::Inside);
+        }
+        ToolIcon::Sensors => {
+            p.circle_stroke(c, 4.5, egui::Stroke::new(1.2, pal.tempc));
+            p.circle_filled(c, 1.5, pal.tempc);
+        }
+        ToolIcon::Memory => {
+            let r = egui::Rect::from_center_size(c, egui::vec2(12.0, 7.0));
+            p.rect_stroke(r, 0.0, egui::Stroke::new(1.2, pal.clockc), egui::StrokeKind::Inside);
+        }
+        ToolIcon::Hex => {
+            p.text(c, Align2::CENTER_CENTER, "0x", FontId::monospace(10.0), pal.volt);
+        }
+        ToolIcon::About => {
+            p.circle_stroke(c, 5.0, egui::Stroke::new(1.2, pal.accent));
+            p.text(c, Align2::CENTER_CENTER, "i", FontId::proportional(9.0), pal.accent);
+        }
+    }
+    p.text(
+        egui::pos2(rect.center().x, rect.bottom() - 6.0),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(10.5),
+        pal.text,
+    );
+    resp.clicked()
 }
 
 fn tree_node(

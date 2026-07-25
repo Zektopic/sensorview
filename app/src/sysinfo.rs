@@ -151,58 +151,48 @@ pub type SystemInfoHandle = Arc<RwLock<Option<SystemInfo>>>;
 pub fn is_elevated() -> Option<bool> {
     #[cfg(windows)]
     {
-        const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x00000020;
-        const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x00000220;
-        const SECURITY_NT_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 5];
-
         #[repr(C)]
-        struct SID_IDENTIFIER_AUTHORITY {
-            value: [u8; 6],
+        struct TokenElevation {
+            token_is_elevated: u32,
         }
+        const TOKEN_QUERY: u32 = 0x0008;
+        const TOKEN_ELEVATION_CLASS: i32 = 20; // TokenElevation
 
         #[link(name = "advapi32")]
         extern "system" {
-            fn AllocateAndInitializeSid(
-                pIdentifierAuthority: *const SID_IDENTIFIER_AUTHORITY,
-                nSubAuthorityCount: u8,
-                nSubAuthority0: u32,
-                nSubAuthority1: u32,
-                nSubAuthority2: u32,
-                nSubAuthority3: u32,
-                nSubAuthority4: u32,
-                nSubAuthority5: u32,
-                nSubAuthority6: u32,
-                nSubAuthority7: u32,
-                pSid: *mut *mut core::ffi::c_void,
+            fn OpenProcessToken(process: isize, desired: u32, handle: *mut isize) -> i32;
+            fn GetTokenInformation(
+                token: isize,
+                class: i32,
+                info: *mut core::ffi::c_void,
+                len: u32,
+                ret_len: *mut u32,
             ) -> i32;
-            fn CheckTokenMembership(
-                TokenHandle: isize,
-                SidToCheck: *mut core::ffi::c_void,
-                IsMember: *mut i32,
-            ) -> i32;
-            fn FreeSid(pSid: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+        }
+        extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn CloseHandle(h: isize) -> i32;
         }
 
         unsafe {
-            let mut admin_sid: *mut core::ffi::c_void = core::ptr::null_mut();
-            let authority = SID_IDENTIFIER_AUTHORITY { value: SECURITY_NT_AUTHORITY };
-            let mut is_member: i32 = 0;
-
-            let ok = if AllocateAndInitializeSid(
-                &authority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
-                0, 0, 0, 0, 0, 0, &mut admin_sid
-            ) != 0 {
-                let check_ok = CheckTokenMembership(0, admin_sid, &mut is_member);
-                FreeSid(admin_sid);
-                check_ok
-            } else {
-                0
-            };
-
+            let mut token: isize = 0;
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return None;
+            }
+            let mut elevation = TokenElevation { token_is_elevated: 0 };
+            let mut ret_len = 0u32;
+            let ok = GetTokenInformation(
+                token,
+                TOKEN_ELEVATION_CLASS,
+                &mut elevation as *mut _ as *mut core::ffi::c_void,
+                core::mem::size_of::<TokenElevation>() as u32,
+                &mut ret_len,
+            );
+            CloseHandle(token);
             if ok == 0 {
                 None
             } else {
-                Some(is_member != 0)
+                Some(elevation.token_is_elevated != 0)
             }
         }
     }
