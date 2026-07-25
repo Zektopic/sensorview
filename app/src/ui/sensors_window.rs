@@ -18,7 +18,15 @@ enum Item {
     Row(Sensor),
 }
 
-fn draw_column_header(ui: &mut egui::Ui, col_w: f32, sensor_name_w: f32, font_scale: f32, s: &Shared, pal: &Palette) {
+#[derive(Clone, Copy)]
+struct ColumnLayout {
+    col_w: f32,
+    sensor_name_w: f32,
+    font_scale: f32,
+}
+
+fn draw_column_header(ui: &mut egui::Ui, layout: ColumnLayout, s: &Shared, pal: &Palette) {
+    let ColumnLayout { col_w, sensor_name_w, font_scale } = layout;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(col_w, 18.0 * font_scale), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 0.0, pal.bg_header);
@@ -48,15 +56,15 @@ fn draw_column_header(ui: &mut egui::Ui, col_w: f32, sensor_name_w: f32, font_sc
     p.text(Pos2::new(rect.left() + sensor_name_w + col_w_step * 4.0 - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Average", FontId::proportional(11.0 * font_scale), pal.text_dim);
 }
 
-fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, sensor_name_w: f32, font_scale: f32, s: &Shared, pal: &Palette) {
+fn draw_column(ui: &mut egui::Ui, items: &[Item], layout: ColumnLayout, s: &Shared, pal: &Palette) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
-        draw_column_header(ui, col_w, sensor_name_w, font_scale, s, pal);
+        draw_column_header(ui, layout, s, pal);
         let mut stripe = 0usize;
         for item in items {
             match item {
                 Item::Header { title, id, hw_type, collapsed } => {
-                    if let Some(new_state) = widgets::group_header(ui, title, *hw_type, *collapsed, col_w, pal) {
+                    if let Some(new_state) = widgets::group_header(ui, title, *hw_type, *collapsed, layout.col_w, pal) {
                         if let Ok(mut st) = s.settings.write() {
                             if new_state {
                                 st.collapsed_groups.insert(id.clone());
@@ -69,7 +77,7 @@ fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, sensor_name_w: f32
                     stripe = 0;
                 }
                 Item::Row(sensor) => {
-                    draw_row(ui, sensor, col_w, sensor_name_w, font_scale, stripe, s, pal);
+                    draw_row(ui, sensor, layout, stripe, s, pal);
                     stripe += 1;
                 }
             }
@@ -77,7 +85,8 @@ fn draw_column(ui: &mut egui::Ui, items: &[Item], col_w: f32, sensor_name_w: f32
     });
 }
 
-fn draw_row(ui: &mut egui::Ui, sensor: &Sensor, col_w: f32, sensor_name_w: f32, font_scale: f32, stripe: usize, s: &Shared, pal: &Palette) {
+fn draw_row(ui: &mut egui::Ui, sensor: &Sensor, layout: ColumnLayout, stripe: usize, s: &Shared, pal: &Palette) {
+    let ColumnLayout { col_w, sensor_name_w, font_scale } = layout;
     let row_h = ROW_H * font_scale;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(col_w, row_h), Sense::click());
     let p = ui.painter();
@@ -447,7 +456,8 @@ fn flow_columns(ui: &mut egui::Ui, items: &[Item], s: &Shared, pal: &Palette) {
             let mut col = 0usize;
             while idx < items.len() {
                 let end = (idx + rows_per_col).min(items.len());
-                draw_column(ui, &items[idx..end], col_w, sensor_name_w, font_scale, s, pal);
+                let layout = ColumnLayout { col_w, sensor_name_w, font_scale };
+                draw_column(ui, &items[idx..end], layout, s, pal);
                 // Column separator.
                 let sep_rect = ui.allocate_exact_size(Vec2::new(1.0, avail.y), Sense::hover()).0;
                 ui.painter().rect_filled(sep_rect, 0.0, pal.grid);
