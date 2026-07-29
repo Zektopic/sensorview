@@ -10,6 +10,8 @@
 
 pub mod demo;
 pub mod firmware;
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(windows)]
 pub mod lhm_bridge;
 
@@ -65,7 +67,11 @@ pub fn default_source() -> Box<dyn SensorSource> {
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(linux::LinuxSysfsSource::new())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Box::new(demo::DemoSource::new())
     }
