@@ -23,7 +23,7 @@ use core_foundation_sys::string::CFStringRef;
 
 use crate::model::{Sensor, SensorType};
 
-use super::dvfs::{self, Block};
+use super::dvfs::{self, Block, State};
 use super::dynlib::Library;
 use super::sensor;
 
@@ -96,9 +96,9 @@ impl Drop for Group {
 pub struct FrequencyReporter {
     api: Option<Api>,
     groups: Vec<Group>,
-    ecpu: Vec<f32>,
-    pcpu: Vec<f32>,
-    gpu: Vec<f32>,
+    ecpu: Vec<State>,
+    pcpu: Vec<State>,
+    gpu: Vec<State>,
 }
 
 // SAFETY: as `ioreport::EnergyReporter` — the CF handles are owned solely by
@@ -110,9 +110,9 @@ impl FrequencyReporter {
         let mut this = Self {
             api: None,
             groups: Vec::new(),
-            ecpu: dvfs::frequencies_mhz(Block::Ecpu),
-            pcpu: dvfs::frequencies_mhz(Block::Pcpu),
-            gpu: dvfs::frequencies_mhz(Block::Gpu),
+            ecpu: dvfs::states(Block::Ecpu),
+            pcpu: dvfs::states(Block::Pcpu),
+            gpu: dvfs::states(Block::Gpu),
         };
 
         let Some(library) = Library::open("/usr/lib/libIOReport.dylib") else {
@@ -278,7 +278,7 @@ impl FrequencyReporter {
                 continue;
             }
 
-            let Some(mhz) = weighted_frequency(api, raw, table) else {
+            let Some((mhz, volts)) = weighted_state(api, raw, table) else {
                 continue;
             };
 
@@ -291,6 +291,22 @@ impl FrequencyReporter {
             }
             let index = (already.len() + out.len()) as u32;
             out.push(sensor(&identifier, &label, SensorType::Clock, index, mhz));
+
+            // The DVFS table pairs every state with its rail voltage, so the
+            // same residency weighting yields a real VID — Apple Silicon has no
+            // separate voltage sensor. Skip it for the GPU, where the Summary
+            // has no VID column.
+            if id != "gpu" {
+                out.push(sensor(
+                    &format!("/applesoc/0/voltage/{id}"),
+                    // "E-Core Clock" -> "E-Core VID"; the Summary matches
+                    // CPU voltages on the substring "vid".
+                    &format!("{} VID", label.trim_end_matches(" Clock")),
+                    SensorType::Voltage,
+                    index,
+                    volts,
+                ));
+            }
         }
         out
     }
@@ -305,13 +321,14 @@ impl FrequencyReporter {
 /// and returning `None` would drop the sensor from the tree entirely — making
 /// the row flicker out of the Sensors table and the Summary whenever the GPU
 /// or a cluster went quiet.
-fn weighted_frequency(api: &Api, channel: CFDictionaryRef, table: &[f32]) -> Option<f32> {
+fn weighted_state(api: &Api, channel: CFDictionaryRef, table: &[State]) -> Option<(f32, f32)> {
     let count = unsafe { (api.state_count)(channel) };
     if count <= 0 {
         return None;
     }
 
     let mut weighted = 0.0f64;
+    let mut weighted_v = 0.0f64;
     let mut active = 0.0f64;
 
     // Whether the DVFS table itself carries an entry for the idle state
@@ -320,7 +337,7 @@ fn weighted_frequency(api: &Api, channel: CFDictionaryRef, table: &[f32]) -> Opt
     // literal 0 MHz idle entry, while the CPU tables (`voltage-states*-sram`)
     // start directly at the lowest running state. Getting this wrong maps
     // every GPU state one slot low and reports a flat 0 MHz.
-    let table_includes_idle = table.first() == Some(&0.0);
+    let table_includes_idle = table.first().is_some_and(|s| s.mhz == 0.0);
     let offset = if table_includes_idle { 0 } else { 1 };
 
     // State index 0 is idle/off on every block; the remaining indices line up
@@ -340,24 +357,26 @@ fn weighted_frequency(api: &Api, channel: CFDictionaryRef, table: &[f32]) -> Opt
         if idle {
             continue;
         }
-        let Some(mhz) = table.get((index - offset) as usize) else {
+        let Some(state) = table.get((index - offset) as usize) else {
             continue;
         };
         // A 0 MHz entry is an idle slot that slipped through; counting it would
         // drag the average toward zero.
-        if *mhz <= 0.0 {
+        if state.mhz <= 0.0 {
             continue;
         }
-        weighted += *mhz as f64 * residency as f64;
+        weighted += state.mhz as f64 * residency as f64;
+        weighted_v += state.volts as f64 * residency as f64;
         active += residency as f64;
     }
 
     if active <= 0.0 {
         // Fully idle: fall back to the lowest running state.
-        return table.iter().copied().find(|mhz| *mhz > 0.0);
+        return table.iter().find(|s| s.mhz > 0.0).map(|s| (s.mhz, s.volts));
     }
     let mhz = (weighted / active) as f32;
-    mhz.is_finite().then_some(mhz)
+    let volts = (weighted_v / active) as f32;
+    (mhz.is_finite() && volts.is_finite()).then_some((mhz, volts))
 }
 
 fn cf_string(raw: CFStringRef) -> String {
@@ -399,17 +418,27 @@ mod tests {
         if sensors.is_empty() {
             return crate::source::macos::absent("active DVFS residency");
         }
+        // Each cluster contributes a clock and, for the CPU, a VID derived
+        // from the same weighting.
         for s in &sensors {
-            let mhz = s.value.unwrap();
-            assert_eq!(s.sensor_type, SensorType::Clock);
-            // Anything outside this means the state table and the residency
-            // indices are misaligned, or the unit scale is wrong.
-            assert!(
-                (100.0..=6000.0).contains(&mhz),
-                "{} = {mhz} MHz is not a plausible Apple Silicon clock",
-                s.name
-            );
+            let v = s.value.unwrap();
+            match s.sensor_type {
+                // Anything outside this means the state table and the residency
+                // indices are misaligned, or the unit scale is wrong.
+                SensorType::Clock => assert!(
+                    (100.0..=6000.0).contains(&v),
+                    "{} = {v} MHz is not a plausible Apple Silicon clock",
+                    s.name
+                ),
+                SensorType::Voltage => assert!(
+                    (0.3..=1.5).contains(&v),
+                    "{} = {v} V is not a plausible core voltage",
+                    s.name
+                ),
+                other => panic!("unexpected sensor type {other:?} from the clock reporter"),
+            }
         }
+        assert!(sensors.iter().any(|s| s.sensor_type == SensorType::Clock));
     }
 
     #[test]
@@ -421,6 +450,10 @@ mod tests {
 
         let ids: std::collections::HashSet<_> = sensors.iter().map(|s| &s.identifier).collect();
         assert_eq!(ids.len(), sensors.len(), "duplicate clock identifiers");
-        assert!(sensors.len() <= 3, "expected at most E-cluster, P-cluster and GPU");
+        let clocks = sensors.iter().filter(|s| s.sensor_type == SensorType::Clock).count();
+        assert!(clocks <= 3, "expected at most E-cluster, P-cluster and GPU clocks");
+        // VID only for the two CPU clusters, never the GPU.
+        let vids = sensors.iter().filter(|s| s.sensor_type == SensorType::Voltage).count();
+        assert!(vids <= 2, "expected at most E-cluster and P-cluster VID");
     }
 }

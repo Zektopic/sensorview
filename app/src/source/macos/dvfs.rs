@@ -41,11 +41,27 @@ impl Block {
     }
 }
 
+/// One DVFS performance state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct State {
+    pub mhz: f32,
+    /// Rail voltage for this state, in volts. The tables pair every frequency
+    /// with the voltage needed to sustain it, which is where the CPU "VID"
+    /// reading comes from — there is no separate voltage sensor on Apple
+    /// Silicon.
+    pub volts: f32,
+}
+
 /// Available frequencies for a block, in MHz, in performance-state order.
 ///
 /// Empty when the node or property is missing — every caller treats that as
 /// "no frequency sensors for this block" rather than an error.
 pub fn frequencies_mhz(block: Block) -> Vec<f32> {
+    states(block).into_iter().map(|s| s.mhz).collect()
+}
+
+/// Full performance-state table (frequency + voltage).
+pub fn states(block: Block) -> Vec<State> {
     let Some(entry) = iokit::entry_from_path(PMGR_PATH) else {
         return Vec::new();
     };
@@ -58,23 +74,35 @@ pub fn frequencies_mhz(block: Block) -> Vec<f32> {
     parse_states(&bytes)
 }
 
-/// Decode packed `(freq, voltage)` `u32` pairs into MHz.
-fn parse_states(bytes: &[u8]) -> Vec<f32> {
-    let raw: Vec<u32> = bytes
+/// Decode packed `(freq, voltage)` `u32` pairs.
+fn parse_states(bytes: &[u8]) -> Vec<State> {
+    let pairs: Vec<(u32, u32)> = bytes
         .chunks_exact(8)
-        .map(|pair| u32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]))
+        .map(|c| {
+            (
+                u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                u32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+            )
+        })
         .collect();
-    if raw.is_empty() {
+    if pairs.is_empty() {
         return Vec::new();
     }
 
     // Detect the unit from the largest entry. No Apple SoC runs at 100 GHz, and
     // none has a 100 MHz *maximum*, so this threshold separates Hz from kHz
     // without needing a per-block table that would rot on the next chip.
-    let max = raw.iter().copied().max().unwrap_or(0) as f64;
+    let max = pairs.iter().map(|(f, _)| *f).max().unwrap_or(0) as f64;
     let to_mhz: f64 = if max >= 100_000_000.0 { 1.0e6 } else { 1.0e3 };
 
-    raw.iter().map(|hz| (*hz as f64 / to_mhz) as f32).collect()
+    pairs
+        .iter()
+        .map(|(freq, mv)| State {
+            mhz: (*freq as f64 / to_mhz) as f32,
+            // Voltages are millivolts (790 => 0.790 V).
+            volts: *mv as f32 / 1000.0,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -124,14 +152,15 @@ mod tests {
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<u8>>();
-        assert_eq!(parse_states(&khz), vec![972.0, 4464.0]);
+        assert_eq!(parse_states(&khz).iter().map(|s| s.mhz).collect::<Vec<_>>(), vec![972.0, 4464.0]);
+        assert_eq!(parse_states(&khz)[0].volts, 0.790);
 
         // Hz-encoded: 338 MHz and 1578 MHz.
         let hz = [338_000_000u32, 500, 1_578_000_000, 900]
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<u8>>();
-        assert_eq!(parse_states(&hz), vec![338.0, 1578.0]);
+        assert_eq!(parse_states(&hz).iter().map(|s| s.mhz).collect::<Vec<_>>(), vec![338.0, 1578.0]);
     }
 
     #[test]

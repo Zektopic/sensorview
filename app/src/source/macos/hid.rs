@@ -23,7 +23,6 @@ use core_foundation_sys::string::CFStringRef;
 use crate::model::{Sensor, SensorType};
 
 use super::dynlib;
-use super::sensor;
 
 /// `kHIDPage_AppleVendor`.
 const APPLE_VENDOR_USAGE_PAGE: i32 = 0xff00;
@@ -60,7 +59,11 @@ pub struct HidSensors {
     /// The HID client, retained for the collector's lifetime. Creating one per
     /// poll leaks kernel ports and is measurably slow.
     client: CFTypeRef,
-    /// Sensor names discovered at construction, in service order.
+    /// The matched services, captured **once**. Re-fetching them each poll
+    /// risks a different order or count, which would misalign them against
+    /// `names` and change sensor identities mid-session.
+    services: Option<CFArray<CFType>>,
+    /// Sensor names, index-aligned with `services`.
     names: Vec<String>,
 }
 
@@ -80,8 +83,12 @@ impl Drop for HidSensors {
 
 impl HidSensors {
     pub fn new() -> Self {
-        let mut this =
-            Self { api: None, client: std::ptr::null(), names: Vec::new() };
+        let mut this = Self {
+            api: None,
+            client: std::ptr::null(),
+            services: None,
+            names: Vec::new(),
+        };
 
         // IOKit.framework is already linked into the process, so the private
         // IOHID* symbols are reachable via RTLD_DEFAULT without dlopen.
@@ -123,12 +130,15 @@ impl HidSensors {
 
         this.client = client;
         this.api = Some(Api { copy_services, copy_property, copy_event, event_float });
+        // Capture the service list once, then never re-enumerate: the sensor
+        // set the app publishes has to be fixed for the lifetime of the run.
+        this.services = this.copy_services();
         this.names = this.service_names();
         this
     }
 
-    /// The matched services, as a CF array. Caller owns the array.
-    fn services(&self) -> Option<CFArray<CFType>> {
+    /// Enumerate the matched services. Called once, from `new`.
+    fn copy_services(&self) -> Option<CFArray<CFType>> {
         let api = self.api.as_ref()?;
         if self.client.is_null() {
             return None;
@@ -144,7 +154,7 @@ impl HidSensors {
         let Some(api) = self.api.as_ref() else {
             return Vec::new();
         };
-        let Some(services) = self.services() else {
+        let Some(services) = self.services.as_ref() else {
             return Vec::new();
         };
         let key = CFString::new("Product");
@@ -175,12 +185,23 @@ impl HidSensors {
         self.names.len()
     }
 
-    /// One `Temperature` sensor per responding service.
+    /// One `Temperature` sensor per matched service, **every** poll.
+    ///
+    /// A service stops answering whenever the subsystem it measures is powered
+    /// down, which is entirely normal and can happen at any moment. Dropping
+    /// the sensor then would remove its row from the Sensors table and blank
+    /// the Summary until the next tick — the flicker this collector used to
+    /// cause — and, because names are de-duplicated by position, would also
+    /// renumber every same-named sensor below it (this machine reports seven
+    /// `"gas gauge battery"` probes).
+    ///
+    /// So the set is fixed and a non-responding sensor reports `None`, which
+    /// the UI renders as "—".
     pub fn temperatures(&self) -> Vec<Sensor> {
         let Some(api) = self.api.as_ref() else {
             return Vec::new();
         };
-        let Some(services) = self.services() else {
+        let Some(services) = self.services.as_ref() else {
             return Vec::new();
         };
 
@@ -188,28 +209,25 @@ impl HidSensors {
         for (index, service) in services.iter().enumerate() {
             let event =
                 unsafe { (api.copy_event)(service.as_CFTypeRef(), EVENT_TYPE_TEMPERATURE, 0, 0) };
-            if event.is_null() {
-                // Sensors go quiet when the subsystem they measure is powered
-                // down; that's normal, so skip rather than reporting 0 °C.
-                continue;
-            }
-            let celsius = unsafe { (api.event_float)(event, FIELD_TEMPERATURE_LEVEL) };
-            unsafe { CFRelease(event) };
 
-            // Reject obvious garbage: a powered-down or misparsed sensor
-            // reports 0 or a wild value, and a fake 0 °C reading in the UI is
-            // worse than an absent sensor.
-            if !celsius.is_finite() || !(1.0..=150.0).contains(&celsius) {
-                continue;
-            }
+            let celsius = if event.is_null() {
+                None
+            } else {
+                let value = unsafe { (api.event_float)(event, FIELD_TEMPERATURE_LEVEL) };
+                unsafe { CFRelease(event) };
+                // Reject obvious garbage: a powered-down or misparsed sensor
+                // reports 0 or a wild value, and a fake 0 degC reading is worse
+                // than an honest blank.
+                (value.is_finite() && (1.0..=150.0).contains(&value)).then_some(value as f32)
+            };
 
             let name = self.names.get(index).cloned().unwrap_or_else(|| format!("Sensor {index}"));
-            out.push(sensor(
+            out.push(super::sensor_opt(
                 &format!("/applesoc/0/temperature/{index}"),
                 &name,
                 SensorType::Temperature,
                 index as u32,
-                celsius as f32,
+                celsius,
             ));
         }
         out
@@ -236,10 +254,16 @@ mod tests {
         if temps.is_empty() {
             return crate::source::macos::absent("live temperature sensors");
         }
+        // Every service is published every poll; a quiet one carries None.
+        assert!(
+            temps.iter().any(|s| s.value.is_some()),
+            "no sensor produced a reading at all"
+        );
         for s in &temps {
-            let v = s.value.unwrap();
-            assert!((1.0..=150.0).contains(&v), "{} = {v} °C out of range", s.name);
             assert!(!s.name.is_empty());
+            if let Some(v) = s.value {
+                assert!((1.0..=150.0).contains(&v), "{} = {v} degC out of range", s.name);
+            }
         }
     }
 

@@ -49,12 +49,30 @@ pub(crate) fn sensor(
     index: u32,
     value: f32,
 ) -> Sensor {
+    sensor_opt(identifier, name, sensor_type, index, Some(value))
+}
+
+/// Build a reading that may have no value this tick.
+///
+/// `Sensor::value` is `Option` precisely so a sensor can be present without
+/// having produced a reading (see `model/mod.rs`). Publishing the sensor with
+/// `None` keeps the row in the table — and its position stable — where
+/// omitting it entirely would make the row flicker in and out. `poll::enrich`
+/// skips `None` without disturbing the accumulated min/max/avg, and the CSV
+/// logger writes an empty cell without shifting columns.
+pub(crate) fn sensor_opt(
+    identifier: &str,
+    name: &str,
+    sensor_type: SensorType,
+    index: u32,
+    value: Option<f32>,
+) -> Sensor {
     Sensor {
         identifier: identifier.to_string(),
         name: name.to_string(),
         sensor_type,
         index,
-        value: Some(value),
+        value,
         min: None,
         max: None,
         avg: None,
@@ -271,14 +289,20 @@ mod tests {
             absent("storage node");
         }
 
-        // Every published reading must be a real number — NaN/inf would
-        // propagate into the graphs and the CSV log.
+        // A sensor may be present without a reading this tick (see
+        // `sensor_opt`), but any value it does carry must be a real number —
+        // NaN/inf would propagate into the graphs and the CSV log.
         for hw in &tree {
             for s in &hw.sensors {
-                let v = s.value.expect("published sensors always carry a value");
-                assert!(v.is_finite(), "{}/{} is not finite", hw.name, s.name);
+                if let Some(v) = s.value {
+                    assert!(v.is_finite(), "{}/{} is not finite", hw.name, s.name);
+                }
             }
         }
+        assert!(
+            tree.iter().any(|hw| hw.sensors.iter().any(|s| s.value.is_some())),
+            "the whole tree produced no readings"
+        );
     }
 
     /// The SoC node is the headline: it must carry temperature, power and load

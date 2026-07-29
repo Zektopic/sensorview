@@ -193,11 +193,22 @@ fn board_memory_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, pal: &
             .map(|v| format!("{v} MT/s"))
             .unwrap_or_default();
         info_row(ui, "Clock:", &clock, pal);
-        let mode = match i.memory_modules.len() {
-            2 => "Dual-Channel",
-            4 => "Quad-Channel",
-            1 => "Single-Channel",
-            _ => "",
+        // Unified memory is a wide on-package bus, not a DIMM channel count —
+        // inferring "Single-Channel" from the one synthetic module would be
+        // plainly wrong.
+        let unified = i
+            .memory_modules
+            .first()
+            .is_some_and(|m| m.memory_type.contains("on-package"));
+        let mode = if unified {
+            "Unified"
+        } else {
+            match i.memory_modules.len() {
+                2 => "Dual-Channel",
+                4 => "Quad-Channel",
+                1 => "Single-Channel",
+                _ => "",
+            }
         };
         info_row(ui, "Mode:", mode, pal);
         info_row(ui, "Timings:", "", pal); // needs SPD — native engine

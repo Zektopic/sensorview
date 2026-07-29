@@ -638,13 +638,20 @@ fn query() -> SystemInfo {
             // cluster's DVFS table.
             base_clock_mhz: p_states.first().map(|mhz| *mhz as u32),
             max_clock_mhz: p_states.last().map(|mhz| *mhz as u32),
-            l2_kb: sysctl_u64("hw.l2cachesize").map(|b| (b / 1024) as u32),
+            // hw.l2cachesize reports the *efficiency* cluster (6 MB here).
+            // The headline figure is the performance cluster's L2
+            // (hw.perflevel0.l2cachesize, 16 MB), so prefer that.
+            l2_kb: sysctl_u64("hw.perflevel0.l2cachesize")
+                .or_else(|| sysctl_u64("hw.l2cachesize"))
+                .map(|b| (b / 1024) as u32),
+            // Apple Silicon has no per-core L3; the system-level cache is not
+            // published anywhere readable, so this stays honestly blank.
+            l3_kb: None,
             socket: (!cluster_desc.is_empty()).then(|| cluster_desc.join(" + ")),
             features: cpu_features(),
             cpuid,
             vendor,
             codename,
-            ..Default::default()
         },
         board: BoardInfo {
             // Prefer the marketing name ("MacBook Air (13-inch, M5)") over the

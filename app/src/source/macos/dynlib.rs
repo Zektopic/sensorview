@@ -93,10 +93,17 @@ mod tests {
     /// app must still run.
     #[test]
     fn libioreport_is_dlopenable_from_the_shared_cache() {
+        // Not asserted as a hard requirement: this is SPI, and a virtualized
+        // CI runner or a future macOS may not ship it. The point of the test is
+        // that when it IS resolvable, it resolves from the dyld shared cache
+        // rather than from a file on disk.
+        if Library::open("/usr/lib/libIOReport.dylib").is_none() {
+            eprintln!("SKIP: libIOReport.dylib is not available on this machine");
+            return;
+        }
         assert!(
             !std::path::Path::new("/usr/lib/libIOReport.dylib").exists(),
-            "if this became a real file the comment above is stale"
+            "libIOReport became a real file; the dlopen-not-link rationale is stale"
         );
-        assert!(Library::open("/usr/lib/libIOReport.dylib").is_some());
     }
 }
