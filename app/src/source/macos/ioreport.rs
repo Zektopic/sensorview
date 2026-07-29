@@ -268,10 +268,12 @@ impl EnergyReporter {
             if unsafe { (api.channel_format)(raw) } != FORMAT_SIMPLE {
                 continue;
             }
-            let energy = unsafe { (api.integer_value)(raw, 0) };
-            if energy <= 0 {
-                continue;
-            }
+            // A rail that burned no measurable energy this interval reads 0,
+            // which is a real measurement — dropping the channel instead would
+            // make the row vanish from the table and reappear on the next tick
+            // whenever a block idles. Negative means the counter wrapped or the
+            // device re-enumerated; clamp rather than report nonsense.
+            let energy = unsafe { (api.integer_value)(raw, 0) }.max(0);
 
             // Convert the counter's own unit to joules rather than assuming
             // millijoules — the label differs across SoC generations.

@@ -93,6 +93,7 @@ mod tests {
         println!("  name     : {}", info.cpu.name);
         println!("  cores    : {:?} threads {:?}", info.cpu.cores, info.cpu.threads);
         println!("  layout   : {:?}", info.cpu.socket);
+        println!("  base/max : {:?} / {:?} MHz", info.cpu.base_clock_mhz, info.cpu.max_clock_mhz);
         println!("  codename : {}", info.cpu.codename);
         println!("  features : {} detected", info.cpu.features.iter().filter(|f| f.1).count());
         println!("--- Memory ---");

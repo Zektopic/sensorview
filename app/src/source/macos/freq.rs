@@ -258,13 +258,19 @@ impl FrequencyReporter {
             // ("ECPU", "PCPU0", "GPUPH"), so match on prefix rather than
             // equality, and check the subgroup too because both groups use
             // similar channel names.
+            //
+            // The names deliberately contain "Core": the System Summary picks
+            // CPU clocks out of the tree by matching that substring (so it can
+            // exclude things like bus speed), and the GPU panel does the same.
+            // Renaming these to "E-Cluster"/"P-Cluster" would silently blank
+            // the Max Clock and Avg. Active Clock rows.
             let context = format!("{subgroup} {name}");
             let (table, label, id) = if context.contains("GPU") {
                 (&self.gpu, "GPU Core".to_string(), "gpu".to_string())
             } else if name.starts_with("ECPU") {
-                (&self.ecpu, "E-Cluster".to_string(), "ecpu".to_string())
+                (&self.ecpu, "E-Core Clock".to_string(), "ecpu".to_string())
             } else if name.starts_with("PCPU") {
-                (&self.pcpu, "P-Cluster".to_string(), "pcpu".to_string())
+                (&self.pcpu, "P-Core Clock".to_string(), "pcpu".to_string())
             } else {
                 continue;
             };
@@ -292,8 +298,13 @@ impl FrequencyReporter {
 
 /// Residency-weighted average frequency, excluding idle states.
 ///
-/// Returns `None` when the block was idle for the whole interval — reporting
-/// 0 MHz there would be wrong, and reporting the base clock would be a guess.
+/// When the block was idle for the *whole* interval there is no weighted
+/// average to take. It reports the lowest running state rather than `None`,
+/// for two reasons: that is the clock the block runs at when it next wakes
+/// (and the value this function already returns for a barely-active block),
+/// and returning `None` would drop the sensor from the tree entirely — making
+/// the row flicker out of the Sensors table and the Summary whenever the GPU
+/// or a cluster went quiet.
 fn weighted_frequency(api: &Api, channel: CFDictionaryRef, table: &[f32]) -> Option<f32> {
     let count = unsafe { (api.state_count)(channel) };
     if count <= 0 {
@@ -342,7 +353,8 @@ fn weighted_frequency(api: &Api, channel: CFDictionaryRef, table: &[f32]) -> Opt
     }
 
     if active <= 0.0 {
-        return None;
+        // Fully idle: fall back to the lowest running state.
+        return table.iter().copied().find(|mhz| *mhz > 0.0);
     }
     let mhz = (weighted / active) as f32;
     mhz.is_finite().then_some(mhz)

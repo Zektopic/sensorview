@@ -307,6 +307,44 @@ mod tests {
         }
     }
 
+    /// Rate-derived sensors used to drop out whenever a block idled: a power
+    /// rail that burned no measurable energy, or a cluster/GPU with no
+    /// non-idle residency, produced no sensor that tick. The row then vanished
+    /// from the Sensors table and blanked the Summary, reappearing on the next
+    /// poll — visible as values flickering in and out.
+    ///
+    /// After warm-up the published set must be identical from poll to poll.
+    #[test]
+    fn sensor_set_is_stable_across_polls() {
+        let mut source = MacSource::new();
+        // Two polls to establish every baseline (power, clocks, storage, load).
+        let _ = source.snapshot();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = source.snapshot();
+
+        let ids = |tree: &[Hardware]| -> std::collections::BTreeSet<String> {
+            tree.iter()
+                .flat_map(|hw| hw.sensors.iter().map(|s| s.identifier.clone()))
+                .collect()
+        };
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let baseline = ids(&source.snapshot());
+        assert!(!baseline.is_empty());
+
+        // Several quiet polls: this is exactly when idle blocks used to drop.
+        for poll in 0..4 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let current = ids(&source.snapshot());
+            let missing: Vec<_> = baseline.difference(&current).collect();
+            let added: Vec<_> = current.difference(&baseline).collect();
+            assert!(
+                missing.is_empty() && added.is_empty(),
+                "sensor set changed on poll {poll}: disappeared {missing:?}, appeared {added:?}"
+            );
+        }
+    }
+
     #[test]
     fn identifiers_are_globally_unique() {
         let mut source = MacSource::new();

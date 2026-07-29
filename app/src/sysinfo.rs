@@ -619,6 +619,10 @@ fn query() -> SystemInfo {
         })
         .collect();
 
+    // Performance-cluster DVFS states, for the Base/Max Clock rows.
+    let p_states =
+        crate::source::macos::dvfs::frequencies_mhz(crate::source::macos::dvfs::Block::Pcpu);
+
     let os_version = sysctl_string("kern.osproductversion").unwrap_or_default();
 
     SystemInfo {
@@ -629,6 +633,11 @@ fn query() -> SystemInfo {
             cores,
             // Apple Silicon has no SMT: one thread per physical core.
             threads: sysctl_u64("hw.logicalcpu").map(|v| v as u32),
+            // There is no fixed "base clock" on Apple Silicon; the closest
+            // honest equivalents are the bottom and top of the performance
+            // cluster's DVFS table.
+            base_clock_mhz: p_states.first().map(|mhz| *mhz as u32),
+            max_clock_mhz: p_states.last().map(|mhz| *mhz as u32),
             l2_kb: sysctl_u64("hw.l2cachesize").map(|b| (b / 1024) as u32),
             socket: (!cluster_desc.is_empty()).then(|| cluster_desc.join(" + ")),
             features: cpu_features(),
