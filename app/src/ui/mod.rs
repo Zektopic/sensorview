@@ -208,32 +208,58 @@ pub fn apply_theme(ctx: &egui::Context, pal: &Palette, light: bool) {
     });
 }
 
-/// Load Segoe UI for HWiNFO-faithful proportional text, and a real monospace
-/// face for the hex dump. Silently keeps egui's defaults when unavailable
-/// (non-Windows, CI).
+/// Per-platform system font candidates, best first.
+///
+/// Only plain `.ttf` files are listed. macOS's `.ttc` collections (Menlo,
+/// Helvetica) are deliberately excluded: ab_glyph, which egui parses fonts
+/// with, does not handle TrueType collections, so those load as garbage or
+/// fail outright. `SFNSMono.ttf` and `Monaco.ttf` are both real single-face
+/// files.
+#[cfg(target_os = "macos")]
+const PROPORTIONAL_FONTS: &[&str] =
+    &["/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Geneva.ttf"];
+#[cfg(target_os = "macos")]
+const MONOSPACE_FONTS: &[&str] =
+    &["/System/Library/Fonts/SFNSMono.ttf", "/System/Library/Fonts/Monaco.ttf"];
+
+#[cfg(windows)]
+const PROPORTIONAL_FONTS: &[&str] = &[r"C:\Windows\Fonts\segoeui.ttf"];
+// Cascadia Mono ships with Windows 11; Consolas is the older fallback.
+#[cfg(windows)]
+const MONOSPACE_FONTS: &[&str] =
+    &[r"C:\Windows\Fonts\CascadiaMono.ttf", r"C:\Windows\Fonts\consola.ttf"];
+
+#[cfg(not(any(windows, target_os = "macos")))]
+const PROPORTIONAL_FONTS: &[&str] =
+    &["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"];
+#[cfg(not(any(windows, target_os = "macos")))]
+const MONOSPACE_FONTS: &[&str] =
+    &["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"];
+
+/// Load the platform UI face for proportional text and a real monospace face
+/// for the hex dump — both align hex columns far better than egui's bundled
+/// face. Silently keeps egui's defaults when nothing loads (CI, minimal
+/// container images).
+///
+/// A readable file is not the same as a usable font, so each candidate is
+/// parsed before being installed and a font that fails to parse falls through
+/// to the next.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mut changed = false;
 
-    if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
+    for (key, candidates, family) in [
+        ("ui", PROPORTIONAL_FONTS, egui::FontFamily::Proportional),
+        ("mono", MONOSPACE_FONTS, egui::FontFamily::Monospace),
+    ] {
+        let Some(bytes) = candidates.iter().find_map(|p| load_font(p)) else {
+            continue;
+        };
         fonts
             .font_data
-            .insert("segoe".into(), Arc::new(egui::FontData::from_owned(bytes)));
-        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-            family.insert(0, "segoe".into());
-        }
-        changed = true;
-    }
-
-    // Cascadia Mono ships with Windows 11; Consolas is the older fallback.
-    // Both align hex columns far better than egui's bundled face.
-    let mono = [r"C:\Windows\Fonts\CascadiaMono.ttf", r"C:\Windows\Fonts\consola.ttf"];
-    if let Some(bytes) = mono.iter().find_map(|p| std::fs::read(p).ok()) {
-        fonts
-            .font_data
-            .insert("mono".into(), Arc::new(egui::FontData::from_owned(bytes)));
-        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-            family.insert(0, "mono".into());
+            .insert(key.into(), Arc::new(egui::FontData::from_owned(bytes)));
+        if let Some(family) = fonts.families.get_mut(&family) {
+            family.insert(0, key.into());
         }
         changed = true;
     }
@@ -242,6 +268,24 @@ pub fn install_fonts(ctx: &egui::Context) {
         ctx.set_fonts(fonts);
     }
 }
+
+/// Read a font file and confirm it is a *single* sfnt face.
+///
+/// Existence is not enough: egui parses fonts with ab_glyph, which cannot read
+/// TrueType **collections**. Handing it a `.ttc` (Menlo, Helvetica on macOS)
+/// yields blank glyphs rather than a clean error, so reject by magic number
+/// instead of trusting the extension.
+fn load_font(path: &str) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(path).ok()?;
+    let magic = bytes.get(..4)?;
+    match magic {
+        // 0x00010000 (TrueType), "true" (legacy Apple), "OTTO" (CFF outlines).
+        [0x00, 0x01, 0x00, 0x00] | b"true" | b"OTTO" => Some(bytes),
+        // "ttcf" — a collection. Unsupported; fall through to the next candidate.
+        _ => None,
+    }
+}
+
 
 // ---- Viewport registration ---------------------------------------------
 
@@ -317,5 +361,36 @@ pub fn show_open_viewports(ctx: &egui::Context, shared: &Shared) {
 pub fn handle_close(ui: &egui::Ui, flag: &AtomicBool) {
     if ui.ctx().input(|i| i.viewport().close_requested()) {
         WindowFlags::close(flag);
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::*;
+
+    /// The whole point of the magic check: on macOS the tempting candidates
+    /// (Menlo, Helvetica) are collections and must be rejected, while the ones
+    /// actually listed must load.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn collections_are_rejected_and_listed_faces_load() {
+        for ttc in ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Helvetica.ttc"] {
+            if std::path::Path::new(ttc).exists() {
+                assert!(load_font(ttc).is_none(), "{ttc} is a collection and must be rejected");
+            }
+        }
+        assert!(
+            PROPORTIONAL_FONTS.iter().any(|p| load_font(p).is_some()),
+            "no usable proportional system font found"
+        );
+        assert!(
+            MONOSPACE_FONTS.iter().any(|p| load_font(p).is_some()),
+            "no usable monospace system font found"
+        );
+    }
+
+    #[test]
+    fn missing_font_is_none() {
+        assert!(load_font("/no/such/font.ttf").is_none());
     }
 }

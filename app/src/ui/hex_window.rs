@@ -109,6 +109,10 @@ fn empty_state(ui: &mut egui::Ui, s: &Shared, pal: &Palette) {
                     "No ACPI or SMBIOS tables were returned by the firmware. SPD and PCI \
                      configuration dumps additionally need a kernel driver — see \
                      Settings → Driver Management."
+                } else if cfg!(target_os = "macos") {
+                    "Apple Silicon has no ACPI or SMBIOS tables — the firmware describes \
+                     hardware with an ARM device tree instead. Storage identity and health \
+                     are collected from IOKit and appear here once the slow lane has run."
                 } else {
                     "Firmware table enumeration is not implemented on this platform yet."
                 })

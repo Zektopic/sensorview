@@ -12,6 +12,8 @@ pub mod demo;
 pub mod firmware;
 #[cfg(windows)]
 pub mod lhm_bridge;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 use serde::{Deserialize, Serialize};
 
@@ -49,8 +51,14 @@ pub trait SensorSource: Send {
 /// Pick the best available source for the current build/platform.
 ///
 /// Windows: the LibreHardwareMonitor bridge (full real sensors), falling back
-/// to the demo source if the sidecar is missing or fails. Other platforms (and
-/// `SENSORVIEW_SOURCE=demo`): the demo source, until the native engine lands.
+/// to the demo source if the sidecar is missing or fails. macOS: the native
+/// IOKit backend — no sidecar, no kernel driver, no elevation. Other platforms
+/// (and `SENSORVIEW_SOURCE=demo`): the demo source.
+///
+/// Note the negative arm is `not(any(windows, macos))`, not `not(windows)`:
+/// with two-arm cfgs, adding a third platform without narrowing the fallback
+/// leaves *both* blocks live and the last one wins, which reads as "my backend
+/// silently isn't being used".
 pub fn default_source() -> Box<dyn SensorSource> {
     if std::env::var("SENSORVIEW_SOURCE").as_deref() == Ok("demo") {
         return Box::new(demo::DemoSource::new());
@@ -65,7 +73,11 @@ pub fn default_source() -> Box<dyn SensorSource> {
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(macos::MacSource::new())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         Box::new(demo::DemoSource::new())
     }

@@ -51,7 +51,21 @@ fn cpuid_info() -> (String, String, String) {
         let codename = codename_for(&vendor, family, model);
         (format!("{eax:08X}"), vendor, codename)
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    // Apple Silicon has no CPUID. The nearest equivalents are the board id
+    // (`hw.model`, e.g. "Mac17,3") and the SoC name from the brand string, so
+    // report those rather than leaving the Summary window blank.
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    {
+        let vendor = if sysctl_string("machdep.cpu.brand_string")
+            .is_some_and(|b| b.starts_with("Apple"))
+        {
+            "Apple".to_string()
+        } else {
+            String::new()
+        };
+        (String::new(), vendor, sysctl_string("hw.model").unwrap_or_default())
+    }
+    #[cfg(not(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "macos"))))]
     {
         (String::new(), String::new(), String::new())
     }
@@ -196,9 +210,82 @@ pub fn is_elevated() -> Option<bool> {
             }
         }
     }
-    #[cfg(not(windows))]
+    // Reported for the status badge only. Nothing on macOS *needs* root: the
+    // IOKit backend reads every sensor unprivileged, so no feature is gated on
+    // this (see ui/settings_dialog.rs).
+    #[cfg(target_os = "macos")]
+    {
+        Some(unsafe { libc::geteuid() } == 0)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         None
+    }
+}
+
+// ---- sysctl helpers (macOS) ---------------------------------------------
+
+/// Read a string-valued sysctl by name. `None` if the key doesn't exist —
+/// keys come and go between macOS releases, so every caller must tolerate it.
+#[cfg(target_os = "macos")]
+pub(crate) fn sysctl_string(name: &str) -> Option<String> {
+    let cname = std::ffi::CString::new(name).ok()?;
+    let mut len = 0usize;
+    // First call with a null buffer asks for the required size.
+    if unsafe {
+        libc::sysctlbyname(cname.as_ptr(), std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0)
+    } != 0
+        || len == 0
+    {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    if unsafe {
+        libc::sysctlbyname(
+            cname.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return None;
+    }
+    buf.truncate(len);
+    // sysctl strings are NUL-terminated; drop the terminator and anything after.
+    if let Some(nul) = buf.iter().position(|&b| b == 0) {
+        buf.truncate(nul);
+    }
+    let s = String::from_utf8_lossy(&buf).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// Read an integer-valued sysctl. Handles both the 4-byte and 8-byte widths the
+/// kernel uses (`hw.ncpu` is 32-bit, `hw.memsize` is 64-bit).
+#[cfg(target_os = "macos")]
+pub(crate) fn sysctl_u64(name: &str) -> Option<u64> {
+    let cname = std::ffi::CString::new(name).ok()?;
+    let mut value = 0u64;
+    let mut len = std::mem::size_of::<u64>();
+    if unsafe {
+        libc::sysctlbyname(
+            cname.as_ptr(),
+            (&mut value as *mut u64).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return None;
+    }
+    match len {
+        8 => Some(value),
+        // The kernel wrote only the low 4 bytes; the upper half is our zeroed
+        // initialiser, so mask rather than trusting the whole u64.
+        4 => Some(value & 0xffff_ffff),
+        _ => None,
     }
 }
 
@@ -241,7 +328,47 @@ fn cpu_features() -> Vec<(&'static str, bool)> {
             ("F16C", is_x86_feature_detected!("f16c")),
         ]
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    // Apple Silicon: the kernel publishes ~80 `hw.optional.arm.FEAT_*` flags.
+    // Curated rather than enumerated so the grid stays readable and the labels
+    // stay `&'static str` — the full list is mostly MTE/SME sub-variants.
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    {
+        const FEATURES: &[(&str, &str)] = &[
+            ("NEON", "hw.optional.arm.AdvSIMD"),
+            ("FP16", "hw.optional.arm.FEAT_FP16"),
+            ("BF16", "hw.optional.arm.FEAT_BF16"),
+            ("I8MM", "hw.optional.arm.FEAT_I8MM"),
+            ("DotProd", "hw.optional.arm.FEAT_DotProd"),
+            ("FHM", "hw.optional.arm.FEAT_FHM"),
+            ("CRC32", "hw.optional.arm.FEAT_CRC32"),
+            ("AES", "hw.optional.arm.FEAT_AES"),
+            ("PMULL", "hw.optional.arm.FEAT_PMULL"),
+            ("SHA1", "hw.optional.arm.FEAT_SHA1"),
+            ("SHA256", "hw.optional.arm.FEAT_SHA256"),
+            ("SHA3", "hw.optional.arm.FEAT_SHA3"),
+            ("SHA512", "hw.optional.arm.FEAT_SHA512"),
+            ("LSE", "hw.optional.arm.FEAT_LSE"),
+            ("LSE2", "hw.optional.arm.FEAT_LSE2"),
+            ("RDM", "hw.optional.arm.FEAT_RDM"),
+            ("JSCVT", "hw.optional.arm.FEAT_JSCVT"),
+            ("FCMA", "hw.optional.arm.FEAT_FCMA"),
+            ("LRCPC", "hw.optional.arm.FEAT_LRCPC"),
+            ("PAuth", "hw.optional.arm.FEAT_PAuth"),
+            ("BTI", "hw.optional.arm.FEAT_BTI"),
+            ("MTE", "hw.optional.arm.FEAT_MTE"),
+            ("DIT", "hw.optional.arm.FEAT_DIT"),
+            ("ECV", "hw.optional.arm.FEAT_ECV"),
+            ("SME", "hw.optional.arm.FEAT_SME"),
+            ("SME2", "hw.optional.arm.FEAT_SME2"),
+            ("SSBS", "hw.optional.arm.FEAT_SSBS"),
+            ("SPECRES", "hw.optional.arm.FEAT_SPECRES"),
+        ];
+        FEATURES
+            .iter()
+            .map(|(label, key)| (*label, sysctl_u64(key).unwrap_or(0) != 0))
+            .collect()
+    }
+    #[cfg(not(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "macos"))))]
     {
         Vec::new()
     }
@@ -416,7 +543,98 @@ fn read_secure_boot() -> Option<bool> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn query() -> SystemInfo {
+    let (cpuid, vendor, codename) = cpuid_info();
+
+    // Apple Silicon is heterogeneous: perflevel0 is the fast cluster (named
+    // "Performance" through M4, "Super" on M5 — read the name, don't hardcode
+    // it) and perflevel1 the efficiency cluster. Sum both for the core count,
+    // and report the layout in `socket` since there is no socket to speak of.
+    let mut cluster_desc = Vec::new();
+    let mut physical = 0u32;
+    for level in 0..4 {
+        let Some(count) = sysctl_u64(&format!("hw.perflevel{level}.physicalcpu")) else {
+            break;
+        };
+        physical += count as u32;
+        let name = sysctl_string(&format!("hw.perflevel{level}.name"))
+            .unwrap_or_else(|| format!("level{level}"));
+        cluster_desc.push(format!("{count} {name}"));
+    }
+    // Fall back to the flat count on any Mac that doesn't publish perflevels.
+    let cores = if physical > 0 { Some(physical) } else { sysctl_u64("hw.physicalcpu").map(|v| v as u32) };
+
+    let total_memory_gb = sysctl_u64("hw.memsize").map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0));
+
+    // The SoC is soldered, so there are no per-DIMM SPD entries to enumerate;
+    // present the unified memory as a single honest module.
+    let memory_modules = total_memory_gb
+        .map(|gb| {
+            vec![MemoryModule {
+                bank: "Unified Memory".into(),
+                manufacturer: "Apple".into(),
+                capacity_gb: gb,
+                memory_type: "LPDDR (on-package)".into(),
+                ..Default::default()
+            }]
+        })
+        .unwrap_or_default();
+
+    // The integrated GPU shares the SoC; name it after the chip rather than
+    // inventing a discrete-adapter identity.
+    let chip = sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
+    let gpus = if chip.is_empty() {
+        Vec::new()
+    } else {
+        vec![GpuInfo { name: format!("{chip} GPU"), vram_gb: None, driver_version: String::new() }]
+    };
+
+    let os_version = sysctl_string("kern.osproductversion").unwrap_or_default();
+
+    SystemInfo {
+        computer_name: sysctl_string("kern.hostname").unwrap_or_default(),
+        user_name: std::env::var("USER").unwrap_or_default(),
+        cpu: CpuInfo {
+            name: chip,
+            cores,
+            // Apple Silicon has no SMT: one thread per physical core.
+            threads: sysctl_u64("hw.logicalcpu").map(|v| v as u32),
+            l2_kb: sysctl_u64("hw.l2cachesize").map(|b| (b / 1024) as u32),
+            socket: (!cluster_desc.is_empty()).then(|| cluster_desc.join(" + ")),
+            features: cpu_features(),
+            cpuid,
+            vendor,
+            codename,
+            ..Default::default()
+        },
+        board: BoardInfo {
+            product: sysctl_string("hw.model").unwrap_or_default(),
+            manufacturer: "Apple Inc.".into(),
+            ..Default::default()
+        },
+        memory_modules,
+        total_memory_gb,
+        gpus,
+        os: OsInfo {
+            caption: if os_version.is_empty() {
+                "macOS".into()
+            } else {
+                format!("macOS {os_version}")
+            },
+            build: sysctl_string("kern.osversion").unwrap_or_default(),
+            arch: std::env::consts::ARCH.to_string(),
+            // Apple Silicon boots via iBoot, not UEFI, and Secure Boot state
+            // lives in a different subsystem — leave both indeterminate rather
+            // than asserting something false.
+            uefi_boot: None,
+            secure_boot: None,
+        },
+        ..Default::default()
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn query() -> SystemInfo {
     let (cpuid, vendor, codename) = cpuid_info();
     SystemInfo {

@@ -295,6 +295,7 @@ fn driver_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette) {
     let frame = s.frame();
     let (source, diag) = (frame.source.clone(), frame.diagnostics.clone());
     // App-token elevation is authoritative (independent of sidecar version).
+    #[cfg_attr(target_os = "macos", allow(unused_variables))]
     let elevated = s.elevated;
 
     ui.add_space(6.0);
@@ -304,7 +305,33 @@ fn driver_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette) {
         ui.label(RichText::new(&diag.engine_version).size(11.0).color(pal.text_dim));
     }
 
+    // macOS reads every sensor through IOKit with no kernel driver and no
+    // elevation, so the entire WinRing0/PawnIO apparatus below is meaningless
+    // there — and a button that silently does nothing is worse than no button.
+    #[cfg(target_os = "macos")]
+    {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new("✓ No kernel driver required — sensors are read directly via IOKit.")
+                .size(11.0)
+                .color(pal.ok_badge),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Temperatures come from the IOHIDEventSystem sensor plane and power from \
+                 IOReport. Both are unprivileged, so SensorView never needs to run as root.",
+            )
+            .size(11.0)
+            .color(pal.text_dim),
+        );
+        driver_report_details(ui, pal, &diag);
+        return;
+    }
+
     // Elevation status badge.
+    #[allow(unreachable_code)]
+    {
     ui.add_space(4.0);
     super::widgets::badge(ui, "Running as Administrator:", elevated, pal);
 
@@ -374,20 +401,25 @@ fn driver_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette) {
         ui.hyperlink_to("PawnIO Website", "https://pawnio.eu/");
     });
 
-    // Raw driver report for troubleshooting.
-    if !diag.driver_report.is_empty() && diag.driver_report != "(no ring0 section in report)" {
-        ui.add_space(8.0);
-        ui.collapsing(RichText::new("Kernel driver report").size(11.0).color(pal.text_dim), |ui| {
-            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                ui.label(
-                    RichText::new(&diag.driver_report)
-                        .size(10.0)
-                        .monospace()
-                        .color(pal.text_dim),
-                );
-            });
-        });
+    driver_report_details(ui, pal, &diag);
     }
+}
+
+/// The collapsible raw backend report. Shared so the macOS branch above can
+/// show it without duplicating the widget.
+fn driver_report_details(ui: &mut egui::Ui, pal: &Palette, diag: &crate::source::Diagnostics) {
+    if diag.driver_report.is_empty() || diag.driver_report == "(no ring0 section in report)" {
+        return;
+    }
+    let title = if cfg!(target_os = "macos") { "Sensor backend report" } else { "Kernel driver report" };
+    ui.add_space(8.0);
+    ui.collapsing(RichText::new(title).size(11.0).color(pal.text_dim), |ui| {
+        egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+            ui.label(
+                RichText::new(&diag.driver_report).size(10.0).monospace().color(pal.text_dim),
+            );
+        });
+    });
 }
 
 fn stub_tab(ui: &mut egui::Ui, pal: &Palette, text: &str) {

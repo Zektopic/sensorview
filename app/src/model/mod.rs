@@ -85,6 +85,9 @@ pub enum HardwareType {
     #[serde(alias = "GpuAmd", alias = "GpuAti")]
     GpuAti,
     GpuIntel,
+    /// Apple Silicon integrated GPU. Not an LHM category — added for the macOS
+    /// backend, where the GPU shares the SoC and its unified memory.
+    GpuApple,
     TBalancer,
     Heatmaster,
     #[serde(alias = "HDD")]

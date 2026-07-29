@@ -34,6 +34,21 @@ futures-util = { version = "0.3", default-features = false, optional = true }
 [target.'cfg(windows)'.dependencies]
 wmi = "0.18"
 
+# --- macOS (Apple Silicon) native backend ----------------------------------
+# IOKit itself is hand-declared (`#[link(name = "IOKit", kind = "framework")]`,
+# see src/source/macos/iokit.rs) to match the extern-block style used for
+# advapi32/kernel32 elsewhere. CoreFoundation is the exception: IOKit returns
+# CFDictionary/CFArray/CFNumber trees, and hand-rolling retain/release around
+# those is where that idiom stops paying for itself.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+# sysctlbyname, dlopen/dlsym (libIOReport is not on disk — see ioreport.rs),
+# geteuid.
+libc = "0.2"
+# host_processor_info / host_statistics64 for per-core load and memory.
+mach2 = "0.4"
+
 [features]
 default = ["web"]
 # The LAN dashboard tier. Compiling without it drops tokio/axum entirely and
@@ -48,7 +63,9 @@ web = [
     "dep:futures-util",
 ]
 
-[build-dependencies]
+# build.rs only ever touches Windows resources, so don't make Linux/macOS
+# builds compile winresource to reach a branch that is `if false` for them.
+[target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
 [profile.release]
