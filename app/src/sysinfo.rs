@@ -416,7 +416,83 @@ fn read_secure_boot() -> Option<bool> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn query() -> SystemInfo {
+    use std::fs;
+    let (cpuid, vendor, codename) = cpuid_info();
+    let mut info = SystemInfo {
+        computer_name: std::env::var("HOSTNAME").unwrap_or_default(),
+        user_name: std::env::var("USER").unwrap_or_default(),
+        cpu: CpuInfo { features: cpu_features(), cpuid, vendor, codename, ..Default::default() },
+        ..Default::default()
+    };
+
+    // Read CPU Model Name and Cores from /proc/cpuinfo
+    if let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo") {
+        let mut model_name = String::new();
+        let mut logical_count = 0u32;
+        for line in cpuinfo.lines() {
+            if line.starts_with("model name") {
+                if let Some(val) = line.split(':').nth(1) {
+                    if model_name.is_empty() {
+                        model_name = val.trim().to_string();
+                    }
+                }
+            }
+            if line.starts_with("processor") {
+                logical_count += 1;
+            }
+        }
+        if !model_name.is_empty() {
+            info.cpu.name = model_name;
+        }
+        if logical_count > 0 {
+            info.cpu.threads = Some(logical_count);
+            info.cpu.cores = Some(logical_count); // best-effort fallback
+        }
+    }
+
+    // Read Motherboard / DMI Info from /sys/class/dmi/id
+    if let Ok(product) = fs::read_to_string("/sys/class/dmi/id/board_name") {
+        info.board.product = product.trim().to_string();
+    }
+    if let Ok(vendor) = fs::read_to_string("/sys/class/dmi/id/board_vendor") {
+        info.board.manufacturer = vendor.trim().to_string();
+    }
+    if let Ok(version) = fs::read_to_string("/sys/class/dmi/id/bios_version") {
+        info.board.bios_version = version.trim().to_string();
+    }
+    if let Ok(date) = fs::read_to_string("/sys/class/dmi/id/bios_date") {
+        info.board.bios_date = date.trim().to_string();
+    }
+
+    // Read RAM Total from /proc/meminfo
+    if let Ok(meminfo) = fs::read_to_string("/proc/meminfo") {
+        for line in meminfo.lines() {
+            if line.starts_with("MemTotal:") {
+                if let Some(kb_str) = line.split_whitespace().nth(1) {
+                    if let Ok(kb) = kb_str.parse::<f64>() {
+                        info.total_memory_gb = Some(kb / (1024.0 * 1024.0));
+                    }
+                }
+            }
+        }
+    }
+
+    // Read OS info from /etc/os-release
+    if let Ok(os_release) = fs::read_to_string("/etc/os-release") {
+        for line in os_release.lines() {
+            if line.starts_with("PRETTY_NAME=") {
+                let name = line.trim_start_matches("PRETTY_NAME=").trim_matches('"');
+                info.os.caption = name.to_string();
+            }
+        }
+    }
+
+    info
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn query() -> SystemInfo {
     let (cpuid, vendor, codename) = cpuid_info();
     SystemInfo {
