@@ -289,6 +289,13 @@ pub(crate) fn sysctl_u64(name: &str) -> Option<u64> {
     }
 }
 
+/// Synchronous `query()` for tests and diagnostics — `spawn_query` returns a
+/// handle that only fills in later, which is awkward to assert against.
+#[cfg(test)]
+pub fn query_for_test() -> SystemInfo {
+    query()
+}
+
 /// Kick off the (slow) WMI enumeration without blocking the UI.
 pub fn spawn_query() -> SystemInfoHandle {
     let handle: SystemInfoHandle = Arc::new(RwLock::new(None));
@@ -581,14 +588,36 @@ fn query() -> SystemInfo {
         })
         .unwrap_or_default();
 
-    // The integrated GPU shares the SoC; name it after the chip rather than
-    // inventing a discrete-adapter identity.
+    // The integrated GPU shares the SoC; name it after the chip and its core
+    // count rather than inventing a discrete-adapter identity.
     let chip = sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
+    let (gpu_cores, metal_driver) = crate::source::macos::sysprofile::gpu_identity();
     let gpus = if chip.is_empty() {
         Vec::new()
     } else {
-        vec![GpuInfo { name: format!("{chip} GPU"), vram_gb: None, driver_version: String::new() }]
+        let name = match gpu_cores {
+            Some(cores) => format!("{chip} GPU ({cores} cores)"),
+            None => format!("{chip} GPU"),
+        };
+        vec![GpuInfo {
+            name,
+            // Unified memory — there is no separate VRAM pool to report, and
+            // quoting total system RAM here would be misleading.
+            vram_gb: None,
+            driver_version: metal_driver.unwrap_or_default(),
+        }]
     };
+
+    // Internal SSD(s), so the Summary's Drives panel isn't blank.
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let drives = crate::source::macos::sysprofile::drives()
+        .into_iter()
+        .map(|(model, bytes)| DriveInfo {
+            model,
+            interface: "NVMe".into(),
+            size_gb: bytes.map(|b| b as f64 / GB),
+        })
+        .collect();
 
     let os_version = sysctl_string("kern.osproductversion").unwrap_or_default();
 
@@ -609,13 +638,23 @@ fn query() -> SystemInfo {
             ..Default::default()
         },
         board: BoardInfo {
-            product: sysctl_string("hw.model").unwrap_or_default(),
+            // Prefer the marketing name ("MacBook Air (13-inch, M5)") over the
+            // bare board id ("Mac17,3"), which is already shown as the codename.
+            product: crate::source::macos::sysprofile::product_name()
+                .or_else(|| sysctl_string("hw.model"))
+                .unwrap_or_default(),
             manufacturer: "Apple Inc.".into(),
-            ..Default::default()
+            // Apple Silicon boots via iBoot, so the closest thing to a BIOS
+            // version is the boot firmware revision.
+            bios_version: crate::source::macos::sysprofile::firmware_version().unwrap_or_default(),
+            // No firmware build date is published anywhere in IOKit; leave it
+            // blank rather than guessing from the version string.
+            bios_date: String::new(),
         },
         memory_modules,
         total_memory_gb,
         gpus,
+        drives,
         os: OsInfo {
             caption: if os_version.is_empty() {
                 "macOS".into()
@@ -630,7 +669,6 @@ fn query() -> SystemInfo {
             uefi_boot: None,
             secure_boot: None,
         },
-        ..Default::default()
     }
 }
 

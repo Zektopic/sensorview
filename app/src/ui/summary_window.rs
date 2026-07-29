@@ -355,7 +355,10 @@ fn gpu_live_clocks(tree: &[Hardware]) -> (Option<f32>, Option<f32>) {
     for hw in tree {
         if matches!(
             hw.hardware_type,
-            HardwareType::GpuNvidia | HardwareType::GpuAti | HardwareType::GpuIntel
+            HardwareType::GpuNvidia
+                | HardwareType::GpuAti
+                | HardwareType::GpuIntel
+                | HardwareType::GpuApple
         ) {
             for s in &hw.sensors {
                 if s.sensor_type == SensorType::Clock {

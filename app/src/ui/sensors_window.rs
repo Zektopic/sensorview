@@ -388,7 +388,10 @@ fn find_cpu_load(tree: &[Hardware]) -> Option<f32> {
 fn group_title(hw: &Hardware) -> String {
     let prefix = match hw.hardware_type {
         HardwareType::Cpu => "CPU: ",
-        HardwareType::GpuNvidia | HardwareType::GpuAti | HardwareType::GpuIntel => "GPU: ",
+        HardwareType::GpuNvidia
+        | HardwareType::GpuAti
+        | HardwareType::GpuIntel
+        | HardwareType::GpuApple => "GPU: ",
         HardwareType::Ram => "",
         HardwareType::Storage | HardwareType::Hdd => "Drive: ",
         HardwareType::Network => "Network: ",

@@ -35,6 +35,7 @@ pub mod iokit;
 pub mod ioreport;
 pub mod load;
 pub mod storage;
+pub mod sysprofile;
 
 use crate::model::{Hardware, HardwareType, Sensor, SensorType};
 

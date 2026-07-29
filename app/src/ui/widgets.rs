@@ -47,7 +47,7 @@ pub fn hardware_icon(ui: &egui::Ui, rect: egui::Rect, t: crate::model::HardwareT
     let c = rect.center();
     let col = match t {
         H::Cpu => pal.accent,
-        H::GpuNvidia | H::GpuAti | H::GpuIntel => pal.ok_badge,
+        H::GpuNvidia | H::GpuAti | H::GpuIntel | H::GpuApple => pal.ok_badge,
         H::Ram => pal.clockc,
         H::Storage | H::Hdd => pal.warn,
         H::Network => pal.fanc,
@@ -62,7 +62,7 @@ pub fn hardware_icon(ui: &egui::Ui, rect: egui::Rect, t: crate::model::HardwareT
             let inner = egui::Rect::from_center_size(c, Vec2::splat(3.5));
             p.rect_filled(inner, 0.0, col);
         }
-        H::GpuNvidia | H::GpuAti | H::GpuIntel => {
+        H::GpuNvidia | H::GpuAti | H::GpuIntel | H::GpuApple => {
             // Card: rectangle + fan circle.
             let r = egui::Rect::from_min_size(Pos2::new(c.x - 5.0, c.y - 3.5), Vec2::new(10.0, 7.0));
             p.rect_stroke(r, 1.0, Stroke::new(1.2, col), StrokeKind::Inside);

@@ -32,7 +32,7 @@ impl InventorySource for MacInventory {
 fn collect_storage() -> Vec<StorageHealth> {
     // The whole-media size is on IOMedia, not the controller, so pair them up
     // by order — Apple Silicon has exactly one internal NVMe controller.
-    let capacity = whole_media_capacities();
+    let capacity = physical_disk_sizes();
 
     iokit::matching_services("IONVMeController")
         .iter()
@@ -80,7 +80,7 @@ fn collect_storage() -> Vec<StorageHealth> {
 ///   `AppleAPFSMedia` container — and those report `"Whole" = Yes` too, so on
 ///   this machine the naive version reported four "disks" (500 GB physical
 ///   plus 494 GB, 5.4 GB and 577 MB APFS containers).
-fn whole_media_capacities() -> Vec<u64> {
+pub fn physical_disk_sizes() -> Vec<u64> {
     let mut sizes: Vec<u64> = iokit::matching_services("IOMedia")
         .iter()
         .filter_map(|service| {
@@ -138,7 +138,7 @@ mod tests {
     /// real 500 GB disk plus three APFS synthesized containers.
     #[test]
     fn apfs_containers_and_partitions_are_not_counted_as_disks() {
-        let sizes = whole_media_capacities();
+        let sizes = physical_disk_sizes();
         if sizes.is_empty() {
             return crate::source::macos::absent("physical IOMedia");
         }
