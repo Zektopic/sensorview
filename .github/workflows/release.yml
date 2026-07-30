@@ -1,16 +1,104 @@
 name: Release
 
-# On a version tag (e.g. v0.1.0) build the native SensorView app on all three
-# OSes and publish a GitHub Release with the installers attached:
+# Builds SensorView on all three OSes and publishes a GitHub Release with the
+# installers attached:
 #   Windows: NSIS setup .exe   Linux: .deb + .AppImage   macOS: .dmg
+#
+# Two ways in:
+#
+#   1. Push a tag       — `git tag v1.2.3 && git push origin v1.2.3`
+#   2. Run it manually  — Actions → Release → Run workflow → type `1.2.3`
+#
+# The manual path creates the tag itself, so version, tag and release all come
+# from one place and cannot disagree. Whichever way it starts, the resolved
+# version is stamped into app/Cargo.toml before the build, so the binary
+# reports it from `--version`, the GUI About line, the text report and the
+# backend diagnostics — and cargo-packager names the installers after it.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.2.3 (the v prefix is added for you)"
+        required: true
+        type: string
+      draft:
+        description: "Publish as a draft you review before making it public"
+        required: false
+        type: boolean
+        default: true
 
 jobs:
+  # Resolves the version once and, on a manual run, creates the tag. Kept out
+  # of the build matrix deliberately: three platforms racing to create the same
+  # tag is a bug waiting to happen, and every leg must build the *same* commit.
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve the version
+        id: resolve
+        shell: bash
+        env:
+          # Read through the environment rather than interpolated directly into
+          # the script: `inputs.version` is arbitrary user text.
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            raw="$INPUT_VERSION"
+          else
+            # A tag push: GITHUB_REF_NAME is the tag.
+            raw="$GITHUB_REF_NAME"
+          fi
+
+          version="${raw#v}"
+          # Cargo demands valid semver. Refusing here is the whole point — the
+          # previous version of this workflow assumed GITHUB_REF_NAME was always
+          # a tag, so a manual run tried to release a version called "master".
+          if ! printf '%s' "$version" |
+              grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$raw' is not a semver version (expected e.g. 1.2.3 or v1.2.3)"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version"    >> "$GITHUB_OUTPUT"
+          echo "Releasing $version (tag v$version)"
+
+      # Only on a manual run — a tag push already has its tag.
+      - name: Create and push the tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.resolve.outputs.tag }}"
+
+          # Never move an existing tag: the artifacts already published under it
+          # would silently stop matching the code it points at.
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::tag $tag already exists — bump the version or delete the tag first"
+            exit 1
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "SensorView $tag"
+          git push origin "$tag"
+          echo "Created $tag at $(git rev-parse --short HEAD)"
+          # NB: tags pushed with GITHUB_TOKEN do not start another workflow run,
+          # so this cannot recurse into the `push: tags` trigger above.
+
   release:
+    needs: prepare
     permissions:
       contents: write
     strategy:
@@ -28,7 +116,11 @@ jobs:
       run:
         working-directory: app
     steps:
+      # Explicitly the tag, so all three legs build the identical commit even if
+      # master moves while the matrix is running.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -45,32 +137,25 @@ jobs:
         with:
           workspaces: app -> target
 
-      # The tag is the single source of truth for the released version.
+      # Without this, app/Cargo.toml stays at its development version and the
+      # release ships a binary reporting 0.1.0 with installers named
+      # SensorView_0.1.0_*, regardless of the tag.
       #
-      # Without this, `app/Cargo.toml` stays at its development version and a
-      # `v1.2.3` tag ships a binary that reports 0.1.0 from `--version`, the
-      # GUI About line, the text report and the backend diagnostics — all of
-      # which read CARGO_PKG_VERSION — plus installers named
-      # `SensorView_0.1.0_*`, since cargo-packager takes the version from the
-      # same field.
-      #
-      # Only the `[package]` version is rewritten. A blanket search-and-replace
+      # Only the [package] version is rewritten — a blanket search-and-replace
       # would also hit dependency requirements like `eframe = "0.35"`.
-      - name: Set version from tag
+      - name: Stamp the version
         shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          python3 - "$GITHUB_REF_NAME" <<'PY'
+          # NB: this job runs with working-directory: app, so every path here is
+          # relative to app/ — not the repository root.
+          python3 - "$VERSION" <<'PY'
           import re, sys
 
-          tag = sys.argv[1]
-          version = tag[1:] if tag.startswith("v") else tag
+          version = sys.argv[1]
 
-          # Cargo demands valid semver; refuse rather than publish something
-          # mislabelled or fail confusingly later in the build.
-          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version):
-              sys.exit(f"::error::tag {tag!r} is not a semver version (expected e.g. v1.2.3)")
-
-          path = "app/Cargo.toml"
+          path = "Cargo.toml"
           text = open(path, encoding="utf-8").read()
 
           # Confine the edit to the [package] table.
@@ -86,14 +171,14 @@ jobs:
               sys.exit("::error::no [package] version field found in app/Cargo.toml")
 
           open(path, "w", encoding="utf-8").write(text[:start] + package + rest)
-          print(f"app/Cargo.toml version set to {version} (from tag {tag})")
+          print(f"Cargo.toml version set to {version}")
 
           # The Inno Setup script carries its own version, used for the
           # installer filename and the Add/Remove Programs entry. CI packages
           # with cargo-packager rather than Inno, so this changes no published
           # artifact today — it keeps a hand-built installer from a tagged
           # checkout from being labelled with the development version.
-          iss = "app/installer/SensorView_Setup.iss"
+          iss = "installer/SensorView_Setup.iss"
           try:
               text = open(iss, encoding="utf-8").read()
           except FileNotFoundError:
@@ -109,8 +194,8 @@ jobs:
                   open(iss, "w", encoding="utf-8").write(text)
                   print(f"{iss} version set to {version}")
           PY
-          grep -m1 '^version' app/Cargo.toml
-          grep -m1 'MyAppVersion "' app/installer/SensorView_Setup.iss
+          grep -m1 '^version' Cargo.toml
+          grep -m1 'MyAppVersion "' installer/SensorView_Setup.iss
 
       - name: Publish LHM bridge sidecar (Windows)
         if: matrix.platform == 'windows-latest'
@@ -122,19 +207,20 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      # Proves the version actually reached the binary, rather than trusting
-      # that editing Cargo.toml was enough. Runs before packaging so a
-      # mislabelled build never becomes a published artifact.
-      - name: Verify the binary reports the tag version
+      # Proves the version actually reached the binary rather than trusting that
+      # editing Cargo.toml was enough. Before packaging, so a mislabelled build
+      # never becomes a published artifact.
+      - name: Verify the binary reports the release version
         shell: bash
+        env:
+          EXPECTED: ${{ needs.prepare.outputs.version }}
         run: |
-          expected="${GITHUB_REF_NAME#v}"
           bin=target/release/sensorview
           [ "${{ matrix.platform }}" = "windows-latest" ] && bin=target/release/sensorview.exe
           actual="$("$bin" --version | awk '{print $NF}')"
-          echo "expected $expected, binary reports $actual"
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::binary reports $actual but the tag is $expected"
+          echo "expected $EXPECTED, binary reports $actual"
+          if [ "$actual" != "$EXPECTED" ]; then
+            echo "::error::binary reports $actual but the release is $EXPECTED"
             exit 1
           fi
 
@@ -144,14 +230,29 @@ jobs:
       - name: Package installers
         run: cargo packager --release --formats ${{ matrix.formats }} --verbose
 
+      # tag_name is explicit: on a manual run the workflow's own ref is a
+      # branch, so the action would otherwise attach the release to the wrong
+      # thing. All three legs target the same release and the action merges
+      # their artifacts into it.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          name: "SensorView ${{ github.ref_name }}"
-          body: "Download the installer for your platform below (.exe, .deb/.AppImage, .dmg)."
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          draft: ${{ github.event_name != 'workflow_dispatch' || inputs.draft }}
+          name: "SensorView ${{ needs.prepare.outputs.tag }}"
+          body: |
+            SensorView ${{ needs.prepare.outputs.version }}
+
+            Download the installer for your platform below.
+
+            | Platform | File |
+            |---|---|
+            | Windows | `*-setup.exe` |
+            | macOS (Apple Silicon) | `*.dmg` — unsigned; System Settings → Privacy & Security → Open Anyway |
+            | Linux | `*.deb` / `*.AppImage` |
+          # Also relative to app/ via the job default.
           files: |
-            app/target/release/*-setup.exe
-            app/target/release/*.deb
-            app/target/release/*.AppImage
-            app/target/release/*.dmg
+            target/release/*-setup.exe
+            target/release/*.deb
+            target/release/*.AppImage
+            target/release/*.dmg
