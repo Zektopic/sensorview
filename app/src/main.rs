@@ -47,6 +47,7 @@ mod inventory;
 mod logging;
 mod model;
 mod poll;
+mod procs;
 mod report;
 mod runtime;
 mod settings;

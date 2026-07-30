@@ -9,6 +9,7 @@
 //! arguments. Hence [`Cli::command`] is an `Option`.
 
 pub mod daemon;
+pub mod procs;
 #[cfg(feature = "push")]
 pub mod push;
 pub mod render;
@@ -78,6 +79,33 @@ pub enum Command {
         #[arg(long, value_name = "TEXT")]
         filter: Option<String>,
     },
+    /// List processes and exit — a task manager for the terminal.
+    Ps {
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Order by.
+        #[arg(long, value_enum, default_value_t = procs::SortKey::Cpu)]
+        sort: procs::SortKey,
+        /// Show only the top N.
+        #[arg(short = 'n', long, value_name = "COUNT")]
+        limit: Option<usize>,
+        /// Only processes whose name, command or exact pid matches.
+        #[arg(long, value_name = "TEXT")]
+        filter: Option<String>,
+        /// Ascending instead of descending.
+        #[arg(long)]
+        ascending: bool,
+    },
+    /// Terminate a process by pid.
+    Kill {
+        /// Process id, as shown by `sensorview ps`.
+        #[arg(value_name = "PID")]
+        pid: u32,
+        /// Send SIGKILL instead of SIGTERM — no chance to clean up.
+        #[arg(long)]
+        force: bool,
+    },
     /// Stream telemetry to stdout until interrupted (or `-n` records).
     Stream {
         /// Output format.
@@ -121,6 +149,21 @@ pub fn run(command: Command, settings: AppSettings) -> ExitCode {
     attach_console();
 
     match command {
+        // Runs its own short-lived collector; the sensor pipeline is not
+        // involved, so don't pay to start it.
+        Command::Ps { json, sort, limit, filter, ascending } => {
+            procs::run(json, sort, limit, filter, ascending)
+        }
+        Command::Kill { pid, force } => match crate::procs::kill(pid, force) {
+            Ok(()) => {
+                let how = if force { "killed" } else { "asked to exit" };
+                super::cli::print_or_exit(&format!("pid {pid} {how}"))
+            }
+            Err(e) => {
+                eprintln!("sensorview: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Daemon {
             port,
             bind,
@@ -246,7 +289,9 @@ fn one_shot(rt: &Runtime, command: Command) -> ExitCode {
             stream::run(rt, format, filter, count, READY_TIMEOUT)
         }
 
-        Command::Daemon { .. } => unreachable!("daemon is handled in run()"),
+        Command::Daemon { .. } | Command::Ps { .. } | Command::Kill { .. } => {
+            unreachable!("these are dispatched in run(), before the runtime starts")
+        }
     }
 }
 
