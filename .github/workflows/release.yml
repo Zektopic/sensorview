@@ -45,6 +45,73 @@ jobs:
         with:
           workspaces: app -> target
 
+      # The tag is the single source of truth for the released version.
+      #
+      # Without this, `app/Cargo.toml` stays at its development version and a
+      # `v1.2.3` tag ships a binary that reports 0.1.0 from `--version`, the
+      # GUI About line, the text report and the backend diagnostics — all of
+      # which read CARGO_PKG_VERSION — plus installers named
+      # `SensorView_0.1.0_*`, since cargo-packager takes the version from the
+      # same field.
+      #
+      # Only the `[package]` version is rewritten. A blanket search-and-replace
+      # would also hit dependency requirements like `eframe = "0.35"`.
+      - name: Set version from tag
+        shell: bash
+        run: |
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import re, sys
+
+          tag = sys.argv[1]
+          version = tag[1:] if tag.startswith("v") else tag
+
+          # Cargo demands valid semver; refuse rather than publish something
+          # mislabelled or fail confusingly later in the build.
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version):
+              sys.exit(f"::error::tag {tag!r} is not a semver version (expected e.g. v1.2.3)")
+
+          path = "app/Cargo.toml"
+          text = open(path, encoding="utf-8").read()
+
+          # Confine the edit to the [package] table.
+          start = text.index("[package]")
+          end = text.find("\n[", start + 1)
+          end = len(text) if end == -1 else end
+          package, rest = text[start:end], text[end:]
+
+          package, count = re.subn(
+              r'(?m)^version\s*=\s*"[^"]*"', f'version = "{version}"', package, count=1
+          )
+          if count != 1:
+              sys.exit("::error::no [package] version field found in app/Cargo.toml")
+
+          open(path, "w", encoding="utf-8").write(text[:start] + package + rest)
+          print(f"app/Cargo.toml version set to {version} (from tag {tag})")
+
+          # The Inno Setup script carries its own version, used for the
+          # installer filename and the Add/Remove Programs entry. CI packages
+          # with cargo-packager rather than Inno, so this changes no published
+          # artifact today — it keeps a hand-built installer from a tagged
+          # checkout from being labelled with the development version.
+          iss = "app/installer/SensorView_Setup.iss"
+          try:
+              text = open(iss, encoding="utf-8").read()
+          except FileNotFoundError:
+              pass
+          else:
+              text, n = re.subn(
+                  r'(?m)^#define MyAppVersion "[^"]*"',
+                  f'#define MyAppVersion "{version}"',
+                  text,
+                  count=1,
+              )
+              if n:
+                  open(iss, "w", encoding="utf-8").write(text)
+                  print(f"{iss} version set to {version}")
+          PY
+          grep -m1 '^version' app/Cargo.toml
+          grep -m1 'MyAppVersion "' app/installer/SensorView_Setup.iss
+
       - name: Publish LHM bridge sidecar (Windows)
         if: matrix.platform == 'windows-latest'
         run: dotnet publish sidecar -c Release -o sidecar/publish
@@ -54,6 +121,22 @@ jobs:
 
       - name: Build (release)
         run: cargo build --release
+
+      # Proves the version actually reached the binary, rather than trusting
+      # that editing Cargo.toml was enough. Runs before packaging so a
+      # mislabelled build never becomes a published artifact.
+      - name: Verify the binary reports the tag version
+        shell: bash
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          bin=target/release/sensorview
+          [ "${{ matrix.platform }}" = "windows-latest" ] && bin=target/release/sensorview.exe
+          actual="$("$bin" --version | awk '{print $NF}')"
+          echo "expected $expected, binary reports $actual"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::binary reports $actual but the tag is $expected"
+            exit 1
+          fi
 
       - name: Install cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
