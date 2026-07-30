@@ -92,6 +92,22 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - **Web dashboard** — responsive, embedded in the binary, no external assets
 
 ### Security posture
+Dependencies are audited on every dependency change and weekly on a schedule
+(`.github/workflows/security.yml`), because a tree that is clean today can be
+vulnerable next week with no code change. `cargo deny` additionally gates
+licences and dependency sources.
+
+The dashboard sets a strict Content-Security-Policy (it is fully
+self-contained, so nothing external is permitted), `Referrer-Policy:
+no-referrer` — which matters because the access token may be passed as
+`?token=` — plus `nosniff`, `X-Frame-Options: DENY` and `Cache-Control:
+no-store` on telemetry.
+
+Push targets are redacted before being logged: `http://user:pass@host` and
+InfluxDB's `?u=&p=` credentials never reach a terminal or journal. Pushing
+cleartext off-machine prints a warning, since telemetry carries hardware
+serials.
+
 The web tier binds to loopback by default. Bound off-loopback it becomes
 token-gated automatically: telemetry exposes hardware serials, SPD contents and
 PCI configuration space, so it is not something to leave open on a LAN. The token
@@ -408,5 +424,5 @@ Adding a platform backend means implementing `SensorSource`, adding one arm to
 
 ## Licence
 
-The Rust application and the OpenHardwareMonitor reference sources are covered by
-the licences in [`Licenses/`](Licenses/).
+MPL-2.0 — see [`Licenses/`](Licenses/). The Rust application and the
+OpenHardwareMonitor reference sources are covered by the same terms.

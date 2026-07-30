@@ -1,0 +1,52 @@
+# cargo-deny configuration.
+#
+# Advisories are handled by `cargo audit` in .github/workflows/security.yml;
+# this file covers what audit does not: licences, duplicate crates and where
+# dependencies come from.
+
+[graph]
+# Check every platform, not just the host — the GUI stack differs sharply
+# between Linux (wayland/X11), macOS and Windows, and a licence problem that
+# only appears on one of them still ships.
+all-features = true
+
+[licenses]
+# Permissive licences only. Anything copyleft would change the terms under
+# which SensorView itself can be distributed, so it should be a deliberate
+# decision rather than something that arrives with a transitive bump.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",          # file-level copyleft; fine when unmodified
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+    # Font licences, from the typefaces egui embeds (epaint_default_fonts).
+    # Both permit redistribution as part of a larger work; neither reaches the
+    # application's own code.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate versions are normal in a tree this size (567 crates) and are a
+# build-size concern rather than a correctness one, so warn rather than fail.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Everything must come from crates.io. A git or path dependency sneaking into
+# the tree is worth failing over: it bypasses crates.io's immutability and the
+# advisory database keys off published versions.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

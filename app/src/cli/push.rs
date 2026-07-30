@@ -32,12 +32,83 @@ pub trait PushSink: Send {
     fn send(&mut self, frame: &TelemetryFrame) -> Result<(), String>;
 }
 
+/// Redact anything secret in a push URL before it is printed.
+///
+/// Push targets routinely carry credentials — `http://user:pass@host` userinfo,
+/// and InfluxDB 1.x takes `?u=&p=` in the query string. The daemon prints its
+/// configured sinks at startup, and that output lands in terminals, systemd
+/// journals and CI logs, so it must not carry the password.
+pub fn redact_url(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (s, r),
+        None => ("", url),
+    };
+
+    // Strip userinfo: everything before the last '@' in the authority.
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    let authority = match authority.rsplit_once('@') {
+        Some((_userinfo, host)) => format!("***@{host}"),
+        None => authority.to_string(),
+    };
+
+    // Blank the value of any query parameter that looks like a credential.
+    let path = match path.split_once('?') {
+        None => path.to_string(),
+        Some((base, query)) => {
+            let scrubbed: Vec<String> = query
+                .split('&')
+                .map(|pair| {
+                    let (key, _) = pair.split_once('=').unwrap_or((pair, ""));
+                    let secret = matches!(
+                        key.to_ascii_lowercase().as_str(),
+                        "p" | "password" | "pass" | "token" | "secret" | "apikey" | "api_key" | "key"
+                    );
+                    if secret {
+                        format!("{key}=***")
+                    } else {
+                        pair.to_string()
+                    }
+                })
+                .collect();
+            format!("{base}?{}", scrubbed.join("&"))
+        }
+    };
+
+    if scheme.is_empty() {
+        format!("{authority}{path}")
+    } else {
+        format!("{scheme}://{authority}{path}")
+    }
+}
+
+/// True when the target sends telemetry in cleartext to somewhere other than
+/// this machine. Telemetry includes hardware serials, so that deserves a
+/// warning even though it is the user's explicit choice.
+pub fn is_cleartext_offhost(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !matches!(scheme, "http" | "influx" | "influxdb") {
+        return false;
+    }
+    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    // Strip the port; keep it simple and treat bracketed IPv6 literally.
+    let host = host.rsplit_once(':').map_or(host, |(h, p)| {
+        if p.chars().all(|c| c.is_ascii_digit()) { h } else { host }
+    });
+    !matches!(host.trim_matches(['[', ']']), "localhost" | "127.0.0.1" | "::1")
+}
+
 /// Build a sink from a URL. `influx://` and `influxdb://` speak line protocol;
 /// `http://` and `https://` post the frame as JSON.
 pub fn sink_from_url(url: &str) -> Result<Box<dyn PushSink>, String> {
     let (scheme, rest) = url
         .split_once("://")
-        .ok_or_else(|| format!("push target {url:?} has no scheme (try http:// or influx://)"))?;
+        .ok_or_else(|| format!("push target {:?} has no scheme (try http:// or influx://)", redact_url(url)))?;
     match scheme {
         "influx" | "influxdb" => Ok(Box::new(InfluxSink::new(format!("http://{rest}")))),
         "influxs" => Ok(Box::new(InfluxSink::new(format!("https://{rest}")))),
@@ -283,6 +354,52 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// The daemon prints its sinks at startup and that output reaches
+    /// journals and CI logs, so a password in the URL must never survive.
+    #[test]
+    fn redaction_removes_userinfo_and_secret_query_params() {
+        assert_eq!(
+            redact_url("http://alice:hunter2@collector:8086/write?db=sensors"),
+            "http://***@collector:8086/write?db=sensors"
+        );
+        // InfluxDB 1.x credentials ride in the query string.
+        assert_eq!(
+            redact_url("influx://h:8086/write?db=s&u=admin&p=hunter2"),
+            "influx://h:8086/write?db=s&u=admin&p=***"
+        );
+        for secret in ["token", "password", "apikey", "api_key", "secret", "key"] {
+            let out = redact_url(&format!("https://h/i?{secret}=hunter2"));
+            assert!(!out.contains("hunter2"), "{secret} leaked: {out}");
+        }
+        // Nothing sensitive: left exactly as it was.
+        assert_eq!(
+            redact_url("https://collector/ingest?db=sensors"),
+            "https://collector/ingest?db=sensors"
+        );
+    }
+
+    /// A parse failure must not echo the raw URL back either.
+    #[test]
+    fn error_messages_are_redacted_too() {
+        let Err(err) = sink_from_url("alice:hunter2@host/path") else {
+            panic!("a schemeless URL must be rejected");
+        };
+        assert!(!err.contains("hunter2"), "credentials leaked in error: {err}");
+    }
+
+    #[test]
+    fn cleartext_warning_only_fires_for_remote_plaintext() {
+        assert!(is_cleartext_offhost("http://collector/ingest"));
+        assert!(is_cleartext_offhost("influx://10.0.0.5:8086/write"));
+        // Local is fine — nothing leaves the machine.
+        assert!(!is_cleartext_offhost("http://127.0.0.1:8086/write"));
+        assert!(!is_cleartext_offhost("http://localhost:8086/write"));
+        assert!(!is_cleartext_offhost("influx://[::1]:8086/write"));
+        // Encrypted is fine wherever it goes.
+        assert!(!is_cleartext_offhost("https://collector/ingest"));
+        assert!(!is_cleartext_offhost("influxs://collector:8086/write"));
     }
 
     #[test]

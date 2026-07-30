@@ -1,0 +1,81 @@
+name: Security
+
+# Dependency advisories are time-dependent: a tree that is clean today can be
+# vulnerable next week with no code change. So this runs on a schedule as well
+# as on dependency changes, rather than only when someone happens to push.
+
+on:
+  push:
+    branches: [master]
+    paths: ["app/Cargo.toml", "app/Cargo.lock", ".github/workflows/security.yml"]
+  pull_request:
+    paths: ["app/Cargo.toml", "app/Cargo.lock", ".github/workflows/security.yml"]
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app -> target
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Findings become ::error:: annotations so they are visible on the PR
+      # without opening the raw log — the same reasoning as the test step in
+      # ci.yml.
+      - name: Audit dependencies
+        shell: bash
+        run: |
+          set +e
+          cargo audit --json > audit.json
+          status=$?
+          python3 - <<'PY'
+          import json, pathlib
+          data = json.loads(pathlib.Path("audit.json").read_text() or "{}")
+          vulns = data.get("vulnerabilities", {}).get("list", [])
+          for v in vulns:
+              a, p = v["advisory"], v["package"]
+              patched = ", ".join(v.get("versions", {}).get("patched", [])) or "none"
+              print(f"::error::{p['name']} {p['version']} — {a['id']}: {a['title']} (patched: {patched})")
+          warnings = data.get("warnings", {})
+          for kind, items in warnings.items():
+              for w in items:
+                  adv = w.get("advisory") or {}
+                  pkg = (w.get("package") or {}).get("name", "?")
+                  print(f"::warning::{pkg} — {kind}: {adv.get('title', kind)}")
+          print(f"{len(vulns)} vulnerabilities, {sum(len(v) for v in warnings.values())} warnings")
+          PY
+          exit "$status"
+
+  # Catches a dependency that quietly changes to a licence the project can't
+  # ship, and duplicate/yanked crates — things `cargo audit` does not look at.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: app/Cargo.toml
+          # `advisories` is covered by the audit job above; this one is about
+          # licences, banned crates and sources.
+          command: check bans licenses sources

@@ -127,7 +127,18 @@ pub fn run(opts: Options) -> ExitCode {
     for url in &push_to {
         match push::sink_from_url(url) {
             Ok(sink) => {
-                println!("  push       {} -> {url} every {push_interval}s", sink.name());
+                // Redacted: this line lands in journals and CI logs.
+                println!(
+                    "  push       {} -> {} every {push_interval}s",
+                    sink.name(),
+                    push::redact_url(url)
+                );
+                if push::is_cleartext_offhost(url) {
+                    eprintln!(
+                        "  warning    that target is cleartext HTTP off this machine; \
+                         telemetry includes hardware serials. Prefer https:// or influxs://."
+                    );
+                }
                 pushers.push(push::spawn(
                     rt.store.clone(),
                     sink,

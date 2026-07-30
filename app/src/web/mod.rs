@@ -222,8 +222,49 @@ pub fn spawn(
 }
 
 /// Build the router. Public so tests can exercise it without a socket.
+/// Response headers applied to every route.
+///
+/// The dashboard is entirely self-contained — HTML, CSS and JS are embedded in
+/// the binary by `rust-embed` and it loads nothing from the network — so the
+/// strictest useful CSP costs nothing and removes injected-script and
+/// external-exfiltration as a class.
+///
+/// `Referrer-Policy` is the load-bearing one. `auth::presented_token` accepts
+/// `?token=` in the query string (a browser cannot set an Authorization header
+/// when you paste a URL), so without this any navigation away from the
+/// dashboard would put the access token in a `Referer` header.
+/// Names must be lowercase: `HeaderName::from_static` panics on anything else,
+/// and this runs on the web thread where `panic = "abort"` would take the whole
+/// process down. `security_header_names_are_valid` guards it.
+const SECURITY_HEADERS: &[(&str, &str)] = &[
+    (
+        "content-security-policy",
+        concat!(
+            "default-src 'none'; ",
+            "script-src 'self'; ",
+            // egui's dashboard styles inline; scripts are not allowed to.
+            "style-src 'self' 'unsafe-inline'; ",
+            "img-src 'self' data:; ",
+            // Same-origin XHR plus the telemetry WebSocket.
+            "connect-src 'self' ws: wss:; ",
+            "base-uri 'none'; ",
+            "form-action 'none'; ",
+            "frame-ancestors 'none'"
+        ),
+    ),
+    ("referrer-policy", "no-referrer"),
+    ("x-content-type-options", "nosniff"),
+    // Redundant with frame-ancestors above, for older browsers.
+    ("x-frame-options", "DENY"),
+    // Telemetry is not something a cache or proxy should retain. Applied only
+    // where a handler hasn't already chosen a policy — `assets` sets
+    // `no-cache` for the embedded dashboard, which is deliberate.
+    ("cache-control", "no-store"),
+];
+
 pub fn router(state: AppState) -> Router {
     use tower_http::compression::CompressionLayer;
+    use tower_http::set_header::SetResponseHeaderLayer;
 
     let public = Router::new()
         // Liveness is intentionally unauthenticated so a monitoring probe
@@ -240,12 +281,22 @@ pub fn router(state: AppState) -> Router {
         .route("/ws/telemetry", get(ws::handler))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_token));
 
-    public
+    let mut app = public
         .merge(protected)
         // gzip: the telemetry JSON is highly repetitive and compresses ~10:1,
         // which matters over Wi-Fi at 1 Hz.
-        .layer(CompressionLayer::new())
-        .with_state(state)
+        .layer(CompressionLayer::new());
+
+    for (name, value) in SECURITY_HEADERS {
+        // `if_not_present` so a handler that deliberately sets its own value
+        // (Content-Type, say) is never overridden.
+        app = app.layer(SetResponseHeaderLayer::if_not_present(
+            axum::http::HeaderName::from_static(name),
+            axum::http::HeaderValue::from_static(value),
+        ));
+    }
+
+    app.with_state(state)
 }
 
 async fn serve(
@@ -275,6 +326,24 @@ async fn serve(
 
 #[cfg(test)]
 mod tests {
+    /// `HeaderName::from_static` panics unless the name is lowercase and
+    /// otherwise valid, and `router()` builds these on the web thread — where
+    /// `panic = "abort"` would take the process with it. Capitalised names got
+    /// this exact panic once already.
+    #[test]
+    fn security_header_names_and_values_are_valid() {
+        for (name, value) in super::SECURITY_HEADERS {
+            assert_eq!(
+                *name,
+                name.to_ascii_lowercase(),
+                "header name {name:?} must be lowercase for HeaderName::from_static"
+            );
+            // These are the exact constructors `router()` uses.
+            let _ = axum::http::HeaderName::from_static(name);
+            let _ = axum::http::HeaderValue::from_static(value);
+        }
+    }
+
     use super::*;
 
     #[test]
