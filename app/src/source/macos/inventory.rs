@@ -132,25 +132,48 @@ mod tests {
         }
     }
 
-    /// Regression test for the two-filter rule in `whole_media_capacities`.
-    /// Before the class check this returned four entries on an M5 Air — the
-    /// real 500 GB disk plus three APFS synthesized containers.
+    /// Regression test for the two-filter rule in `physical_disk_sizes`.
+    /// Before the class check it returned four entries on an M5 Air — the real
+    /// 500 GB disk plus three APFS synthesized containers.
+    ///
+    /// The invariant is expressed against the registry rather than against any
+    /// particular disk layout: sizes, counts and partition-vs-container
+    /// thresholds are all properties of the machine, and CI runs on a
+    /// virtualized Mac whose layout is nothing like a laptop's.
     #[test]
-    fn apfs_containers_and_partitions_are_not_counted_as_disks() {
-        let sizes = physical_disk_sizes();
-        if sizes.is_empty() {
-            return crate::source::macos::absent("physical IOMedia");
+    fn apfs_containers_are_excluded_by_class() {
+        // Every whole-media node, subclasses included — what the naive version
+        // returned.
+        let mut whole = 0usize;
+        let mut synthesized = 0usize;
+        for service in iokit::matching_services("IOMedia") {
+            let Some(props) = iokit::properties(service.0) else {
+                continue;
+            };
+            if iokit::dict_bool(&props, "Whole") != Some(true) {
+                continue;
+            }
+            if dict_i64(&props, "Size").filter(|s| *s > 0).is_none() {
+                continue;
+            }
+            whole += 1;
+            // AppleAPFSMedia and friends: matched by IOServiceMatching because
+            // it matches subclasses, which is the whole reason for the check.
+            if iokit::object_class(service.0).as_deref() != Some("IOMedia") {
+                synthesized += 1;
+            }
         }
-        // The point of the two filters: no partition (~577 MB EFI) and no APFS
-        // container (which mirrors most of the disk) may appear. Disk *count*
-        // is not asserted — that is a property of the machine, not the code.
-        assert!(
-            sizes.iter().all(|s| *s > 1_000_000_000),
-            "a partition or APFS container leaked in: {sizes:?}"
+
+        if whole == 0 {
+            return crate::source::macos::absent("whole IOMedia nodes");
+        }
+
+        // The filter must remove exactly the synthesized nodes — no more, no
+        // fewer — whatever this machine's disk layout happens to be.
+        assert_eq!(
+            physical_disk_sizes().len(),
+            whole - synthesized,
+            "class filter removed the wrong set ({whole} whole, {synthesized} synthesized)"
         );
-        // Containers would show up as near-duplicates of the physical size.
-        let mut sorted = sizes.clone();
-        sorted.dedup();
-        assert_eq!(sorted.len(), sizes.len(), "duplicate media sizes suggest containers: {sizes:?}");
     }
 }
