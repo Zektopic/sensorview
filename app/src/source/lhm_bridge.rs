@@ -198,6 +198,14 @@ fn find_sidecar() -> Option<PathBuf> {
             candidates.push(dir.join("sidecar").join(SIDECAR_EXE));
         }
     }
+    // Developer conveniences only. CARGO_MANIFEST_DIR is baked in at compile
+    // time, so in a shipped binary these point at whatever directory the build
+    // machine used. That path will not normally exist on a user's system, but
+    // if it ever did — and were writable — it would be a path from which we
+    // would happily launch an executable. A release build looks next to itself
+    // and nowhere else.
+    #[cfg(debug_assertions)]
+    {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     candidates.push(
         manifest_dir
@@ -223,5 +231,6 @@ fn find_sidecar() -> Option<PathBuf> {
             .join("win-x64")
             .join(SIDECAR_EXE),
     );
+    }
     candidates.into_iter().find(|p| p.is_file())
 }

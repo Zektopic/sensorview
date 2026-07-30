@@ -386,10 +386,16 @@ fn driver_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette) {
                 std::path::PathBuf::from("resources/PawnIO_setup.exe")
             };
             if setup.exists() {
+                // The path is interpolated into a PowerShell single-quoted
+                // string, and this launches elevated (-Verb RunAs). A quote in
+                // the install path — `C:\Users\O'Brien\...` is legal — would
+                // otherwise close the literal and let the rest be parsed as
+                // commands. PowerShell escapes a single quote by doubling it.
+                let quoted = setup.display().to_string().replace('\'', "''");
                 let _ = std::process::Command::new("powershell")
                     .args([
                         "-Command",
-                        &format!("Start-Process -FilePath '{}' -Verb RunAs", setup.display()),
+                        &format!("Start-Process -FilePath '{quoted}' -Verb RunAs"),
                     ])
                     .spawn();
             } else {
