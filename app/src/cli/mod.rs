@@ -9,6 +9,8 @@
 //! arguments. Hence [`Cli::command`] is an `Option`.
 
 pub mod daemon;
+#[cfg(feature = "push")]
+pub mod push;
 pub mod render;
 pub mod stream;
 
@@ -93,6 +95,15 @@ pub enum Command {
         /// Poll interval in milliseconds (clamped to the engine's 250–10000 range).
         #[arg(long, value_name = "MS")]
         interval: Option<u64>,
+        /// Push telemetry to a collector, e.g. influx://host:8086/write?db=sensors
+        /// or http://collector/ingest. Repeatable.
+        #[cfg(feature = "push")]
+        #[arg(long = "push", value_name = "URL")]
+        push_to: Vec<String>,
+        /// Seconds between pushes.
+        #[cfg(feature = "push")]
+        #[arg(long, value_name = "SECS", default_value_t = 10)]
+        push_interval: u64,
     },
 }
 
@@ -101,7 +112,26 @@ pub fn run(command: Command, settings: AppSettings) -> ExitCode {
     attach_console();
 
     match command {
-        Command::Daemon { port, bind, log, interval } => daemon::run(settings, port, bind, log, interval),
+        Command::Daemon {
+            port,
+            bind,
+            log,
+            interval,
+            #[cfg(feature = "push")]
+            push_to,
+            #[cfg(feature = "push")]
+            push_interval,
+        } => daemon::run(daemon::Options {
+            settings,
+            port,
+            bind,
+            log,
+            interval,
+            #[cfg(feature = "push")]
+            push_to,
+            #[cfg(feature = "push")]
+            push_interval,
+        }),
         // Everything else is a one-shot: start the pipeline, wait for usable
         // data, print, exit. `Runtime::drop` shuts the threads down.
         other => {

@@ -85,12 +85,14 @@ jobs:
       # `--no-default-features` used to mean "GUI without the web tier". Making
       # the GUI itself optional silently changed it to mean "no front end at
       # all", so the combinations are spelled out rather than left to drift with
-      # one flag. All four are configurations a user can actually get:
+      # one flag. Each is a configuration a user can actually get:
       #
       #   cli            headless binary for servers and containers (no egui)
       #   cli+web        the same, plus the dashboard — what `daemon` is for
       #   gui            desktop app with no listening socket
+      #   cli+push       push telemetry to a collector, no dashboard
       #   gui+web        the previous meaning of this check
+      #   cli+web+push   the full headless deployment
       #
       # Clippy rather than check: a headless build is shipped, so it has to be
       # warning-clean, not merely compilable.
@@ -98,7 +100,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          for features in "" "web" "gui" "gui,web"; do
+          for features in "" "web" "gui" "push" "gui,web" "web,push"; do
             echo "::group::--no-default-features --features '$features'"
             cargo clippy --no-default-features --features "$features" \
               --all-targets -- -D warnings

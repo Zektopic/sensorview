@@ -39,6 +39,7 @@ rand = { version = "0.9", optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true }
 clap = { version = "4.6.4", features = ["derive"] }
 ctrlc = "3.5.2"
+ureq = { version = "3.3.0", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 wmi = "0.18"
@@ -59,11 +60,13 @@ libc = "0.2"
 mach2 = "0.4"
 
 [features]
-default = ["gui", "web"]
+default = ["gui", "web", "push"]
 
 # The native window. Dropping it yields a headless binary for servers and
 # containers that never links the windowing stack.
 gui = ["dep:eframe", "dep:egui_extras", "dep:egui_tiles", "dep:image"]
+# Push telemetry to an external collector (InfluxDB line protocol, JSON webhook).
+push = ["dep:ureq"]
 # The LAN dashboard tier. Compiling without it drops tokio/axum entirely and
 # yields a pure-GUI binary.
 web = [
@@ -75,6 +78,7 @@ web = [
     "dep:rand",
     "dep:futures-util",
 ]
+ureq = ["dep:ureq"]
 
 # build.rs only ever touches Windows resources, so don't make Linux/macOS
 # builds compile winresource to reach a branch that is `if false` for them.

@@ -11,16 +11,37 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "push")]
+use super::push;
 use crate::runtime;
 use crate::settings::AppSettings;
 
-pub fn run(
-    mut settings: AppSettings,
-    port: Option<u16>,
-    bind: Option<String>,
-    log: bool,
-    interval: Option<u64>,
-) -> ExitCode {
+/// Daemon configuration. A struct rather than six positional parameters —
+/// several are `Option`s of similar types and would be easy to transpose.
+pub struct Options {
+    pub settings: AppSettings,
+    pub port: Option<u16>,
+    pub bind: Option<String>,
+    pub log: bool,
+    pub interval: Option<u64>,
+    #[cfg(feature = "push")]
+    pub push_to: Vec<String>,
+    #[cfg(feature = "push")]
+    pub push_interval: u64,
+}
+
+pub fn run(opts: Options) -> ExitCode {
+    let Options {
+        mut settings,
+        port,
+        bind,
+        log,
+        interval,
+        #[cfg(feature = "push")]
+        push_to,
+        #[cfg(feature = "push")]
+        push_interval,
+    } = opts;
     // Flags override the persisted settings for this run only — a daemon
     // invocation must not rewrite the GUI's saved preferences.
     if let Some(port) = port {
@@ -98,6 +119,29 @@ pub fn run(
             None => eprintln!("sensorview: not logging — no sensor data to define columns"),
         }
     }
+    // Push sinks run on their own threads reading the store, so a collector
+    // that is down or slow can never stall the poller.
+    #[cfg(feature = "push")]
+    let mut pushers = Vec::new();
+    #[cfg(feature = "push")]
+    for url in &push_to {
+        match push::sink_from_url(url) {
+            Ok(sink) => {
+                println!("  push       {} -> {url} every {push_interval}s", sink.name());
+                pushers.push(push::spawn(
+                    rt.store.clone(),
+                    sink,
+                    Duration::from_secs(push_interval.max(1)),
+                ));
+            }
+            Err(e) => {
+                eprintln!("sensorview: {e}");
+                rt.shutdown();
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     println!("Ctrl-C to stop.");
 
     // The handler runs on its own thread and cannot own the handles, so it only
@@ -119,6 +163,10 @@ pub fn run(
         if let Some(logger) = slot.as_ref() {
             println!("  wrote {} rows to {}", logger.rows(), logger.path().display());
         }
+    }
+    #[cfg(feature = "push")]
+    for pusher in &mut pushers {
+        pusher.stop();
     }
     let uptime = rt.started.elapsed();
     rt.shutdown();

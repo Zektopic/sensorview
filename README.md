@@ -78,6 +78,8 @@ controller — the field renders `—` rather than a plausible-looking guess.
   exit codes, so `sensorview get … || alert` works
 - **Daemon mode** — `sensorview daemon`, with clean Ctrl-C shutdown
 - **Streaming** — `sensorview stream`, NDJSON or CSV on stdout, pipe-friendly
+- **Push sinks** — InfluxDB line protocol or a JSON webhook, on their own
+  thread with backoff, so a collector that is down never stalls the poller
 - **GUI-free builds** from 704 KB, for servers and containers
 
 ### Data out
@@ -120,6 +122,10 @@ sensorview stream                              # NDJSON, the full frame per line
 sensorview stream --filter temp -n 10          # compact records, 10 then stop
 sensorview stream --format csv --filter power  # timestamped CSV
 sensorview stream | head -5                    # closed pipe exits 0
+
+# Push to a collector instead of pulling — daemon posts on an interval
+sensorview daemon --push influx://influx:8086/write?db=sensors --push-interval 5
+sensorview daemon --push http://collector/ingest        # JSON webhook
 ```
 
 `stream --format csv` emits a real `unix_ms` timestamp column, not the row
@@ -141,6 +147,9 @@ Dropping the `gui` feature compiles the windowing stack out entirely:
 | `cargo build --release` | 7.1 MB | GUI + dashboard + CLI |
 | `--no-default-features --features web` | **1.3 MB** | CLI + dashboard — for servers and containers |
 | `--no-default-features` | **704 KB** | CLI only |
+
+Features are `gui`, `web` and `push`; all three are on by default and CI builds
+every combination that ships.
 
 ## Platform support
 
