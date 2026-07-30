@@ -73,6 +73,12 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - **Hex Viewer** for raw firmware blobs (ACPI/SMBIOS on Windows and Linux)
 - Configurable poll interval, min/max reset, light/dark/grey themes
 
+### Command line
+- **One-shot queries** — `sensors`, `get`, `info`, `report`; JSON or text; real
+  exit codes, so `sensorview get … || alert` works
+- **Daemon mode** — `sensorview daemon`, with clean Ctrl-C shutdown
+- **GUI-free builds** from 704 KB, for servers and containers
+
 ### Data out
 - **CSV logging** at 1 Hz to Documents, one column per sensor
 - **Text report export** for pasting into bug reports
@@ -88,6 +94,41 @@ PCI configuration space, so it is not something to leave open on a LAN. The toke
 is generated per run and never written to disk.
 
 ---
+
+## Command line
+
+`sensorview` works from a terminal, not just as a window. Bare `sensorview`
+still opens the GUI.
+
+```bash
+sensorview sensors                     # the whole tree
+sensorview sensors --filter temp       # only matching sensors
+sensorview sensors --json | jq '.[]'   # flat JSON array, one object per sensor
+
+sensorview get "CPU Package Power"     # -> CPU Package Power: 21.5 W
+sensorview get "PMU tdie6" --raw       # -> 38.77   (bare number, for scripts)
+sensorview get "no such sensor"        # exit code 1
+
+sensorview info                        # System Summary as text
+sensorview report                      # the GUI's text report, from the CLI
+
+sensorview daemon --port 9090 --log    # headless; Ctrl-C stops it cleanly
+```
+
+One-shot commands wait for *usable* data before printing. Power, clock and
+throughput readings are computed from the delta between two polls, so they do
+not exist in the first frame — a naive implementation would return blank on a
+cold start. `get` waits for the named sensor to actually carry a value.
+
+### Headless builds
+
+Dropping the `gui` feature compiles the windowing stack out entirely:
+
+| Build | Size | Contents |
+|---|---|---|
+| `cargo build --release` | 7.1 MB | GUI + dashboard + CLI |
+| `--no-default-features --features web` | **1.3 MB** | CLI + dashboard — for servers and containers |
+| `--no-default-features` | **704 KB** | CLI only |
 
 ## Platform support
 

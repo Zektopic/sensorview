@@ -272,19 +272,7 @@ pub fn badge(ui: &mut egui::Ui, label: &str, ok: Option<bool>, pal: &Palette) {
     });
 }
 
-/// Format a sensor value with unit, HWiNFO-style decimals.
-pub fn format_value(value: Option<f32>, t: SensorType) -> String {
-    let Some(v) = value else { return "—".to_string() };
-    let decimals = match t {
-        SensorType::Voltage => 3,
-        SensorType::Fan | SensorType::SmallData => 0,
-        SensorType::Data => 0,
-        _ => 1,
-    };
-    let unit = t.unit();
-    if unit.is_empty() {
-        format!("{v:.decimals$}")
-    } else {
-        format!("{v:.decimals$} {unit}")
-    }
-}
+// Formatting moved to `crate::format` so the report, CLI and TUI can use it
+// without linking the GUI toolkit. Re-exported here because every UI call site
+// already says `widgets::format_value`.
+pub use crate::format::format_value;

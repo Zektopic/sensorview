@@ -110,6 +110,8 @@ impl AppSettings {
             .unwrap_or_default()
     }
 
+    // Only the GUI persists settings today; a CLI-only build has no caller.
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     pub fn save(&self) {
         let Some(path) = Self::path() else { return };
         if let Some(dir) = path.parent() {

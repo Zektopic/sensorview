@@ -38,7 +38,9 @@ use crate::state::{now_ms, TelemetryFrame, TelemetryStore};
 /// with the poller.
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// Rebase min/max/avg to the current readings.
+    /// Rebase min/max/avg to the current readings. Sent by interactive front
+    /// ends (GUI "Reset Min/Max", TUI `r`); a one-shot CLI build has no caller.
+    #[allow(dead_code)]
     ResetMinMax,
     /// Change the fast-lane interval (clamped on receipt).
     SetInterval(Duration),
@@ -78,8 +80,11 @@ pub struct PollHandle {
     /// enough: the thread is parked in `recv_timeout`, so without a message it
     /// would not notice until the current interval elapsed — up to 10 s.
     commands: Sender<Command>,
-    /// Called after each publish, to wake the GUI. Set once, after `eframe` has
-    /// created the context; `OnceLock` keeps the hot path atomic-read cheap.
+    /// Called after each publish, to wake an interactive front end. Set once,
+    /// after `eframe` has created the context; `OnceLock` keeps the hot path
+    /// atomic-read cheap. A CLI-only build never registers one, so the lock
+    /// stays empty and the poll loop skips the wake.
+    #[allow(dead_code)]
     on_tick: Arc<OnceLock<TickFn>>,
     join: Option<JoinHandle<()>>,
 }
@@ -91,6 +96,7 @@ impl PollHandle {
     }
 
     /// Register the repaint callback. Called once from the eframe setup closure.
+    #[allow(dead_code)]
     pub fn on_tick(&self, f: impl Fn() + Send + Sync + 'static) {
         let _ = self.on_tick.set(Box::new(f));
     }

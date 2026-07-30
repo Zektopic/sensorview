@@ -162,6 +162,8 @@ pub type SystemInfoHandle = Arc<RwLock<Option<SystemInfo>>>;
 /// Whether this process is running elevated (`Some(true/false)` on Windows,
 /// `None` elsewhere). Reliable and independent of the sidecar — the sidecar is
 /// our child, so it inherits our elevation.
+// Surfaced as the GUI's "Running as Administrator" badge.
+#[allow(dead_code)]
 pub fn is_elevated() -> Option<bool> {
     #[cfg(windows)]
     {

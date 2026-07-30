@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::model::Hardware;
 use crate::sysinfo::SystemInfo;
-use crate::ui::widgets::format_value;
+use crate::format::format_value;
 
 pub fn write_report(tree: &[Hardware], info: Option<&SystemInfo>) -> Result<PathBuf, String> {
     let mut out = String::new();

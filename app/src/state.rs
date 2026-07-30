@@ -92,6 +92,9 @@ impl TelemetryFrame {
     }
 
     /// Look up a sensor anywhere in the tree by identifier.
+    // Consumed by the GUI graph window and the web history endpoint; a
+    // CLI-only build has neither.
+    #[allow(dead_code)]
     pub fn find_sensor(&self, identifier: &str) -> Option<&crate::model::Sensor> {
         fn walk<'a>(hw: &'a [Hardware], id: &str) -> Option<&'a crate::model::Sensor> {
             for h in hw {
@@ -182,11 +185,15 @@ impl TelemetryStore {
 
     /// Number of live WebSocket subscribers (shown in the UI status bar).
     #[cfg(feature = "web")]
+    // Shown in the GUI's status bar; no other front end displays it.
+    #[allow(dead_code)]
     pub fn subscriber_count(&self) -> usize {
         self.tx.receiver_count()
     }
 
     /// Samples for one sensor, oldest → newest.
+    // As `find_sensor`: GUI graphs and /api/history.
+    #[allow(dead_code)]
     pub fn history(&self, identifier: &str) -> Vec<f32> {
         self.history
             .read()

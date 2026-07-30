@@ -10,13 +10,20 @@ edition = "2021"
 rust-version = "1.92"
 
 [dependencies]
-eframe = "0.35"
-egui_extras = "0.35"
-egui_tiles = { version = "0.16", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
+# "rc" is required: TelemetryFrame holds `Arc<Inventory>` (state.rs), and
+# `Arc<T>: Serialize` only exists behind that feature. It used to be enabled
+# transitively by a GUI crate, so making the GUI optional broke serialization
+# in headless builds — hence enabling it explicitly here.
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
-image = { version = "0.25", default-features = false, features = ["png"] }
 dirs = "6"
+
+# --- GUI (optional: `--no-default-features --features cli` drops all of it) --
+eframe = { version = "0.35", optional = true }
+egui_extras = { version = "0.35", optional = true }
+egui_tiles = { version = "0.16", features = ["serde"], optional = true }
+# Only used to decode the embedded window icon.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 # Lock-free publish/subscribe of the latest telemetry frame (see src/state.rs).
 arc-swap = "1.9"
 
@@ -30,6 +37,8 @@ rand = { version = "0.9", optional = true }
 # Only for StreamExt/SinkExt when splitting a WebSocket into read + write
 # halves — tokio::select! can't borrow the socket mutably twice.
 futures-util = { version = "0.3", default-features = false, optional = true }
+clap = { version = "4.6.4", features = ["derive"] }
+ctrlc = "3.5.2"
 
 [target.'cfg(windows)'.dependencies]
 wmi = "0.18"
@@ -50,7 +59,11 @@ libc = "0.2"
 mach2 = "0.4"
 
 [features]
-default = ["web"]
+default = ["gui", "web"]
+
+# The native window. Dropping it yields a headless binary for servers and
+# containers that never links the windowing stack.
+gui = ["dep:eframe", "dep:egui_extras", "dep:egui_tiles", "dep:image"]
 # The LAN dashboard tier. Compiling without it drops tokio/axum entirely and
 # yields a pure-GUI binary.
 web = [

@@ -80,10 +80,39 @@ jobs:
           rustup component add clippy
           cargo clippy --all-targets -- -D warnings -D clippy::await_holding_lock
 
-      # The GUI-only configuration must keep building: it is what a user gets
-      # when they don't want a listening socket at all.
-      - name: Check without the web tier
-        run: cargo check --no-default-features --all-targets
+      # Every shipping configuration, enumerated explicitly.
+      #
+      # `--no-default-features` used to mean "GUI without the web tier". Making
+      # the GUI itself optional silently changed it to mean "no front end at
+      # all", so the combinations are spelled out rather than left to drift with
+      # one flag. All four are configurations a user can actually get:
+      #
+      #   cli            headless binary for servers and containers (no egui)
+      #   cli+web        the same, plus the dashboard — what `daemon` is for
+      #   gui            desktop app with no listening socket
+      #   gui+web        the previous meaning of this check
+      #
+      # Clippy rather than check: a headless build is shipped, so it has to be
+      # warning-clean, not merely compilable.
+      - name: Clippy — every feature combination
+        shell: bash
+        run: |
+          set -e
+          for features in "" "web" "gui" "gui,web"; do
+            echo "::group::--no-default-features --features '$features'"
+            cargo clippy --no-default-features --features "$features" \
+              --all-targets -- -D warnings
+            echo "::endgroup::"
+          done
+
+      # The headless binary is the reason the GUI is optional; prove it still
+      # runs and that a bare invocation prints help rather than hanging.
+      - name: Smoke-test the headless build
+        shell: bash
+        run: |
+          cargo build --no-default-features --features web
+          ./target/debug/sensorview --help
+          ./target/debug/sensorview sensors --filter cpu || true
 
       - name: Build (release)
         run: cargo build --release

@@ -35,140 +35,199 @@
 //! * **Shutdown is ordered.** GUI exit → stop Thread 3 (releases the port) →
 //!   stop Thread 1 (releases the sensor driver) → stop Thread 1b.
 
-// Hide the console window on Windows release builds.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Hide the console window on Windows release builds — but only when the GUI is
+// compiled in. A `--no-default-features --features cli` binary is a console
+// program and must keep its stdout. The GUI-capable binary still attaches to a
+// parent console on demand when invoked with a subcommand (see cli::attach_console).
+#![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
 
+mod cli;
+mod format;
 mod inventory;
 mod logging;
 mod model;
 mod poll;
 mod report;
+mod runtime;
 mod settings;
 mod source;
 mod state;
 mod sysinfo;
+#[cfg(feature = "gui")]
 mod ui;
 #[cfg(feature = "web")]
 mod web;
 
-#[cfg(feature = "web")]
-use std::net::{IpAddr, Ipv4Addr};
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::process::ExitCode;
 
-use eframe::egui;
+use clap::Parser;
 
 use settings::AppSettings;
-use state::TelemetryStore;
-use ui::{main_window, Shared, WindowFlags};
 
-/// How many ticks a WebSocket client may fall behind before it is told it
-/// lagged and resyncs. Small on purpose: for a live dashboard, the newest frame
-/// is the only interesting one.
-const BROADCAST_CAPACITY: usize = 16;
+fn main() -> ExitCode {
+    let args = cli::Cli::parse();
+    let settings = AppSettings::load();
 
-fn main() -> eframe::Result {
-    let app_settings = AppSettings::load();
-
-    // ---- Shared state ----------------------------------------------------
-    let store = Arc::new(TelemetryStore::new(BROADCAST_CAPACITY));
-    let sysinfo = sysinfo::spawn_query();
-    // Shared with the UI, which toggles logging; the poll thread does the writing.
-    let logger: poll::LoggerSlot = Arc::new(Mutex::new(None));
-
-    let poll_config = poll::PollConfig {
-        fast: Duration::from_millis(app_settings.poll_interval_ms),
-        // Floor of 5 s: S.M.A.R.T. and SPD reads are expensive and keep drives
-        // awake, so no setting may turn the slow lane into a second fast one.
-        slow: Duration::from_secs(app_settings.inventory_interval_s.max(5)),
-    };
-
-    // ---- Thread 1b: slow lane (S.M.A.R.T. / SPD / topology) --------------
-    let collector = inventory::spawn_collector(inventory::default_inventory(), poll_config.slow);
-
-    // ---- Thread 1: hardware poller --------------------------------------
-    let poller = poll::spawn(
-        store.clone(),
-        source::default_source(),
-        collector,
-        logger.clone(),
-        poll_config,
-    );
-
-    // ---- Thread 3: web dashboard ----------------------------------------
-    // Started before the GUI so a bind failure (port in use) is known by the
-    // time the first frame is drawn, and can be shown rather than guessed at.
-    #[cfg(feature = "web")]
-    let web = web::spawn(
-        store.clone(),
-        sysinfo.clone(),
-        web::WebConfig {
-            enabled: app_settings.web_enabled,
-            bind: if app_settings.web_lan_access {
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-            } else {
-                IpAddr::V4(Ipv4Addr::LOCALHOST)
-            },
-            port: app_settings.web_port,
-        }
-        .with_env_overrides(),
-    );
-
-    // Announce the dashboard the way any server does. Release builds have no
-    // console (`windows_subsystem = "windows"`), so this is for development and
-    // for anyone launching from a terminal; the UI shows the same thing.
-    #[cfg(feature = "web")]
-    match (&web.url(), &web.error) {
-        (Some(url), _) => eprintln!("SensorView dashboard: {url}"),
-        (None, Some(err)) => eprintln!("SensorView dashboard unavailable: {err}"),
-        (None, None) => {}
+    match args.command {
+        Some(command) => cli::run(command, settings),
+        // Bare `sensorview` launches the GUI: installers, Dock entries and
+        // Start-menu shortcuts all invoke the binary with no arguments.
+        None => launch_default(settings),
     }
+}
 
-    let shared = Shared {
-        store: store.clone(),
-        commands: poller.sender(),
-        settings: Arc::new(RwLock::new(app_settings.clone())),
-        sysinfo,
-        windows: Arc::new(WindowFlags::default()),
-        graphs: Arc::new(RwLock::new(std::collections::BTreeSet::new())),
-        logger,
-        elevated: sysinfo::is_elevated(),
-        started: Instant::now(),
+#[cfg(feature = "gui")]
+fn launch_default(settings: AppSettings) -> ExitCode {
+    gui::run(settings)
+}
+
+/// Without a GUI there is nothing sensible to do with no arguments, so show the
+/// help rather than starting an invisible process the user cannot stop.
+#[cfg(not(feature = "gui"))]
+fn launch_default(_settings: AppSettings) -> ExitCode {
+    use clap::CommandFactory;
+    let _ = cli::Cli::command().print_help();
+    println!();
+    eprintln!("(this build has no GUI — see `sensorview daemon` to run headless)");
+    ExitCode::FAILURE
+}
+
+/// The GUI front end. Everything `eframe`-shaped lives behind the `gui`
+/// feature so a headless build never links the windowing stack.
+#[cfg(feature = "gui")]
+mod gui {
+    use std::process::ExitCode;
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, RwLock};
+    use std::time::Duration;
+
+    use eframe::egui;
+
+    use crate::settings::AppSettings;
+    use crate::ui::{main_window, Shared, WindowFlags};
+    use crate::{logging, runtime, settings, sysinfo, ui};
+
+    pub fn run(app_settings: AppSettings) -> ExitCode {
+        let rt = runtime::start(&app_settings);
+
+        // Announce the dashboard the way any server does. Release builds have
+        // no console (`windows_subsystem = "windows"`), so this is for
+        // development and for anyone launching from a terminal; the UI shows
+        // the same thing.
         #[cfg(feature = "web")]
-        web: Arc::new(ui::WebStatus {
-            url: web.url(),
-            token: web.token.clone(),
-            error: web.error.clone(),
-            lan: app_settings.web_lan_access,
-        }),
-    };
+        match (&rt.web.url(), &rt.web.error) {
+            (Some(url), _) => eprintln!("SensorView dashboard: {url}"),
+            (None, Some(err)) => eprintln!("SensorView dashboard unavailable: {err}"),
+            (None, None) => {}
+        }
 
-    // Startup windows per settings (HWiNFO's "Show … on Startup").
-    shared
-        .windows
-        .summary
-        .store(app_settings.show_summary_on_startup, Ordering::Relaxed);
-    shared
-        .windows
-        .sensors
-        .store(app_settings.show_sensors_on_startup, Ordering::Relaxed);
-    // Dev/testing affordances (env-gated, inert in normal use). They exist so
-    // the windows that only open on user interaction — Settings, Graph — can be
-    // smoke-tested without driving the mouse.
-    if std::env::var("SENSORVIEW_SHOW_SETTINGS").is_ok() {
-        shared.windows.settings.store(true, Ordering::Relaxed);
+        let shared = Shared {
+            store: rt.store.clone(),
+            commands: rt.poller.sender(),
+            settings: Arc::new(RwLock::new(app_settings.clone())),
+            sysinfo: rt.sysinfo.clone(),
+            windows: Arc::new(WindowFlags::default()),
+            graphs: Arc::new(RwLock::new(std::collections::BTreeSet::new())),
+            logger: rt.logger.clone(),
+            elevated: sysinfo::is_elevated(),
+            started: rt.started,
+            #[cfg(feature = "web")]
+            web: Arc::new(ui::WebStatus {
+                url: rt.web.url(),
+                token: rt.web.token.clone(),
+                error: rt.web.error.clone(),
+                lan: app_settings.web_lan_access,
+            }),
+        };
+
+        // Startup windows per settings (HWiNFO's "Show … on Startup").
+        shared
+            .windows
+            .summary
+            .store(app_settings.show_summary_on_startup, Ordering::Relaxed);
+        shared
+            .windows
+            .sensors
+            .store(app_settings.show_sensors_on_startup, Ordering::Relaxed);
+        apply_dev_hooks(&shared, &rt);
+
+        if std::env::var("SENSORVIEW_HEADLESS").is_ok() {
+            return headless(rt);
+        }
+
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title("SensorView")
+                .with_inner_size([760.0, 560.0])
+                .with_min_inner_size([620.0, 420.0])
+                .with_icon(load_icon()),
+            ..Default::default()
+        };
+
+        // ---- Thread 2: the GUI, on the main thread (winit requires it) -----
+        let result = eframe::run_native(
+            "SensorView",
+            options,
+            Box::new(move |cc| {
+                ui::install_fonts(&cc.egui_ctx);
+                // The poller wakes the UI after each publish, so egui repaints
+                // on new data rather than spinning at the display refresh rate.
+                let ctx = cc.egui_ctx.clone();
+                rt.poller.on_tick(move || ctx.request_repaint());
+                Ok(Box::new(SensorViewApp {
+                    shared,
+                    main_state: main_window::MainWindowState::default(),
+                    rt,
+                }))
+            }),
+        );
+
+        match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("SensorView failed to start the window: {e}");
+                ExitCode::FAILURE
+            }
+        }
     }
-    if std::env::var("SENSORVIEW_SHOW_HEX").is_ok() {
-        shared.windows.hex.store(true, Ordering::Relaxed);
+
+    /// `SENSORVIEW_HEADLESS` is superseded by `sensorview daemon` in Stage 1;
+    /// kept working so existing scripts don't break.
+    fn headless(mut rt: runtime::Runtime) -> ExitCode {
+        eprintln!("SENSORVIEW_HEADLESS is deprecated; use `sensorview daemon`.");
+        println!("SensorView running in headless mode.");
+        #[cfg(feature = "web")]
+        if let Some(url) = rt.web.url() {
+            println!("Dashboard URL: {url}");
+        }
+        std::thread::park();
+        rt.shutdown();
+        ExitCode::SUCCESS
     }
-    let open_graph = std::env::var("SENSORVIEW_OPEN_GRAPH").ok();
-    let start_logging = std::env::var("SENSORVIEW_START_LOGGING").is_ok();
-    if open_graph.is_some() || start_logging {
-        // Both need real sensors, which only exist once the poller has ticked.
-        let frame = wait_for_first_frame(&store, Duration::from_secs(20));
+
+    /// Dev/testing affordances (env-gated, inert in normal use). They exist so
+    /// the windows that only open on user interaction — Settings, Graph — can be
+    /// smoke-tested without driving the mouse.
+    fn apply_dev_hooks(shared: &Shared, rt: &runtime::Runtime) {
+        if std::env::var("SENSORVIEW_SHOW_SETTINGS").is_ok() {
+            shared.windows.settings.store(true, Ordering::Relaxed);
+        }
+        if std::env::var("SENSORVIEW_SHOW_HEX").is_ok() {
+            shared.windows.hex.store(true, Ordering::Relaxed);
+        }
+        let open_graph = std::env::var("SENSORVIEW_OPEN_GRAPH").ok();
+        let start_logging = std::env::var("SENSORVIEW_START_LOGGING").is_ok();
+        if open_graph.is_none() && !start_logging {
+            return;
+        }
+
+        // Both need real sensors, and rate-derived ones only exist from the
+        // second frame onward.
+        let frame = match rt.wait_for_usable_frame(Duration::from_secs(20)) {
+            Ok(f) | Err(f) => f,
+        };
         if let Some(needle) = &open_graph {
-            if let Some(id) = first_sensor_matching(&frame.tree, needle) {
+            if let Some(id) = runtime::first_sensor_matching(&frame.tree, needle) {
                 shared.windows.sensors.store(true, Ordering::Relaxed);
                 if let Ok(mut g) = shared.graphs.write() {
                     g.insert(id);
@@ -188,126 +247,48 @@ fn main() -> eframe::Result {
         }
     }
 
-    if std::env::var("SENSORVIEW_HEADLESS").is_ok() {
-        #[cfg(feature = "web")]
-        if let Some(url) = web.url() {
-            println!("SensorView running in headless mode.");
-            println!("Dashboard URL: {url}");
-        } else {
-            println!("SensorView running in headless mode.");
+    /// Window icon (32×32 PNG baked into the binary).
+    fn load_icon() -> egui::IconData {
+        let bytes = include_bytes!("../assets/32x32.png");
+        let img = image::load_from_memory(bytes)
+            .expect("embedded icon is valid PNG")
+            .into_rgba8();
+        let (width, height) = img.dimensions();
+        egui::IconData { rgba: img.into_raw(), width, height }
+    }
+
+
+    struct SensorViewApp {
+        shared: Shared,
+        main_state: main_window::MainWindowState,
+        /// Owning the runtime here means `on_exit` shuts the threads down in the
+        /// defined order, and its `Drop` is a backstop if the process exits
+        /// another way.
+        rt: runtime::Runtime,
+    }
+
+    impl eframe::App for SensorViewApp {
+        fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+            // Theme follows the settings' Color Mode (switchable live).
+            let pal = self.shared.palette();
+            let light = self.shared.color_mode() == settings::ColorMode::Light;
+            ui::apply_theme(ui.ctx(), &pal, light);
+
+            main_window::show(ui, &self.shared, &mut self.main_state);
+            ui::show_open_viewports(ui.ctx(), &self.shared);
         }
-        std::thread::park();
-        return Ok(());
-    }
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("SensorView")
-            .with_inner_size([760.0, 560.0])
-            .with_min_inner_size([620.0, 420.0])
-            .with_icon(load_icon()),
-        ..Default::default()
-    };
-
-    // ---- Thread 2: the GUI, on the main thread (winit requires it) -------
-    eframe::run_native(
-        "SensorView",
-        options,
-        Box::new(move |cc| {
-            ui::install_fonts(&cc.egui_ctx);
-            // The poller wakes the UI after each publish, so egui repaints on
-            // new data rather than spinning at the display refresh rate.
-            let ctx = cc.egui_ctx.clone();
-            poller.on_tick(move || ctx.request_repaint());
-            Ok(Box::new(SensorViewApp {
-                shared,
-                main_state: main_window::MainWindowState::default(),
-                poller,
-                #[cfg(feature = "web")]
-                web,
-            }))
-        }),
-    )
-}
-
-struct SensorViewApp {
-    shared: Shared,
-    main_state: main_window::MainWindowState,
-    /// Owning the handles here means `on_exit` can shut the threads down in a
-    /// defined order, and `Drop` is a backstop if the process exits another way.
-    poller: poll::PollHandle,
-    #[cfg(feature = "web")]
-    web: web::WebHandle,
-}
-
-impl eframe::App for SensorViewApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Theme follows the settings' Color Mode (switchable live).
-        let pal = self.shared.palette();
-        let light = self.shared.color_mode() == settings::ColorMode::Light;
-        ui::apply_theme(ui.ctx(), &pal, light);
-
-        main_window::show(ui, &self.shared, &mut self.main_state);
-        ui::show_open_viewports(ui.ctx(), &self.shared);
-    }
-
-    fn on_exit(&mut self) {
-        if let Ok(st) = self.shared.settings.read() {
-            if st.remember_preferences {
-                st.save();
-            }
-        }
-        // Ordered shutdown: release the port first so a quick restart can
-        // rebind, then the sensor driver (which the sidecar holds open).
-        #[cfg(feature = "web")]
-        self.web.stop();
-        self.poller.stop();
-    }
-}
-
-/// Block until the poller publishes its first frame, or `timeout` elapses.
-/// Only used by the env-gated dev hooks, which need real sensor identifiers.
-fn wait_for_first_frame(
-    store: &Arc<TelemetryStore>,
-    timeout: Duration,
-) -> Arc<state::TelemetryFrame> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let frame = store.load();
-        if frame.seq > 0 || Instant::now() >= deadline {
-            return frame;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// First sensor identifier whose name contains `needle` (case-insensitive).
-fn first_sensor_matching(tree: &[model::Hardware], needle: &str) -> Option<String> {
-    let needle = needle.to_lowercase();
-    fn walk(tree: &[model::Hardware], needle: &str) -> Option<String> {
-        for hw in tree {
-            for s in &hw.sensors {
-                if s.name.to_lowercase().contains(needle) {
-                    return Some(s.identifier.clone());
+        fn on_exit(&mut self) {
+            if let Ok(st) = self.shared.settings.read() {
+                if st.remember_preferences {
+                    st.save();
                 }
             }
-            if let Some(found) = walk(&hw.sub_hardware, needle) {
-                return Some(found);
-            }
+            // Ordered shutdown: release the port first so a quick restart can
+            // rebind, then the sensor driver (which the sidecar holds open).
+            self.rt.shutdown();
         }
-        None
     }
-    walk(tree, &needle)
-}
-
-/// Window icon (32×32 PNG baked into the binary).
-fn load_icon() -> egui::IconData {
-    let bytes = include_bytes!("../assets/32x32.png");
-    let img = image::load_from_memory(bytes)
-        .expect("embedded icon is valid PNG")
-        .into_rgba8();
-    let (width, height) = img.dimensions();
-    egui::IconData { rgba: img.into_raw(), width, height }
 }
 
 #[cfg(test)]
