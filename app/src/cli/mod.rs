@@ -10,6 +10,7 @@
 
 pub mod daemon;
 pub mod render;
+pub mod stream;
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -66,6 +67,18 @@ pub enum Command {
     },
     /// Write a full text report, the same one the GUI's Report button produces.
     Report,
+    /// Stream telemetry to stdout until interrupted (or `-n` records).
+    Stream {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = stream::Format::Ndjson)]
+        format: stream::Format,
+        /// Only stream sensors whose name contains this (case-insensitive).
+        #[arg(long, value_name = "TEXT")]
+        filter: Option<String>,
+        /// Stop after this many records. Unlimited if omitted.
+        #[arg(short = 'n', long, value_name = "COUNT")]
+        count: Option<u64>,
+    },
     /// Run headless: sensors, web dashboard, no window. Ctrl-C to stop.
     Daemon {
         /// Port for the web dashboard.
@@ -185,6 +198,10 @@ fn one_shot(rt: &Runtime, command: Command) -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+
+        Command::Stream { format, filter, count } => {
+            stream::run(rt, format, filter, count, READY_TIMEOUT)
         }
 
         Command::Daemon { .. } => unreachable!("daemon is handled in run()"),

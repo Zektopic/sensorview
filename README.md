@@ -77,6 +77,7 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - **One-shot queries** — `sensors`, `get`, `info`, `report`; JSON or text; real
   exit codes, so `sensorview get … || alert` works
 - **Daemon mode** — `sensorview daemon`, with clean Ctrl-C shutdown
+- **Streaming** — `sensorview stream`, NDJSON or CSV on stdout, pipe-friendly
 - **GUI-free builds** from 704 KB, for servers and containers
 
 ### Data out
@@ -113,7 +114,18 @@ sensorview info                        # System Summary as text
 sensorview report                      # the GUI's text report, from the CLI
 
 sensorview daemon --port 9090 --log    # headless; Ctrl-C stops it cleanly
+
+# Streaming — one record per poll, until Ctrl-C or -n
+sensorview stream                              # NDJSON, the full frame per line
+sensorview stream --filter temp -n 10          # compact records, 10 then stop
+sensorview stream --format csv --filter power  # timestamped CSV
+sensorview stream | head -5                    # closed pipe exits 0
 ```
+
+`stream --format csv` emits a real `unix_ms` timestamp column, not the row
+counter the GUI's CSV logger uses, and keeps its columns fixed from the first
+record so the output stays rectangular. A sensor with no reading in a given
+tick leaves its field empty rather than writing a fabricated `0`.
 
 One-shot commands wait for *usable* data before printing. Power, clock and
 throughput readings are computed from the delta between two polls, so they do
