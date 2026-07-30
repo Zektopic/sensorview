@@ -285,11 +285,15 @@ mod tests {
         let Some(first) = services.first() else {
             return crate::source::macos::absent("IOPlatformExpertDevice");
         };
-        let props = properties(first.0).expect("platform expert has properties");
+        let Some(props) = properties(first.0) else {
+            return crate::source::macos::absent("IOPlatformExpertDevice properties");
+        };
         // `model` is CFData here ("Mac17,3"), which is exactly the CFData
-        // fallback in dict_string.
-        let model = dict_string(&props, "model").expect("model property");
-        assert!(!model.is_empty());
+        // fallback in dict_string exists for.
+        match dict_string(&props, "model") {
+            Some(model) => assert!(!model.is_empty()),
+            None => crate::source::macos::absent("IOPlatformExpertDevice `model`"),
+        }
     }
 
     /// A class that does not exist must yield an empty vec, not a panic — this

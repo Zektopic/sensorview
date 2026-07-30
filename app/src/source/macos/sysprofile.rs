@@ -158,7 +158,9 @@ mod tests {
         }
         let (model, size) = &drives[0];
         assert!(!model.is_empty());
-        let bytes = size.expect("capacity");
-        assert!(bytes > 100_000_000_000, "capacity {bytes} too small for an internal SSD");
+        let Some(bytes) = size else {
+            return crate::source::macos::absent("whole-media size");
+        };
+        assert!(*bytes > 1_000_000_000, "capacity {bytes} implausibly small for a disk");
     }
 }

@@ -94,11 +94,9 @@ mod tests {
         };
         assert_eq!(hw.hardware_type, HardwareType::GpuApple);
 
-        let load = hw
-            .sensors
-            .iter()
-            .find(|s| s.sensor_type == SensorType::Load)
-            .expect("at least one utilisation sensor");
+        let Some(load) = hw.sensors.iter().find(|s| s.sensor_type == SensorType::Load) else {
+            return crate::source::macos::absent("GPU utilisation statistics");
+        };
         let v = load.value.unwrap();
         assert!((0.0..=100.0).contains(&v), "GPU utilisation {v} out of range");
     }

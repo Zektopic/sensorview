@@ -28,7 +28,7 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -56,7 +56,7 @@ jobs:
         run: cargo build --release
 
       - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+        run: cargo install cargo-packager --version 0.11.8 --locked
 
       - name: Package installers
         run: cargo packager --release --formats ${{ matrix.formats }} --verbose

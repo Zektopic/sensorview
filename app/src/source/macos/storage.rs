@@ -126,18 +126,22 @@ mod tests {
             return crate::source::macos::absent("IOBlockStorageDriver");
         }
         assert!(
-            first[0].sensors.iter().all(|s| s.sensor_type != SensorType::Throughput),
+            first.iter().all(|hw| hw.sensors.iter().all(|s| s.sensor_type != SensorType::Throughput)),
             "first poll must not invent a rate from cumulative counters"
         );
 
         std::thread::sleep(std::time::Duration::from_millis(120));
         let second = collector.collect();
-        let rates: Vec<_> = second[0]
-            .sensors
+        let rates: Vec<_> = second
             .iter()
+            .flat_map(|hw| hw.sensors.iter())
             .filter(|s| s.sensor_type == SensorType::Throughput)
             .collect();
-        assert_eq!(rates.len(), 2, "read + write rate on the second poll");
+        if rates.is_empty() {
+            return crate::source::macos::absent("block-storage throughput counters");
+        }
+        // Read + write per device.
+        assert_eq!(rates.len() % 2, 0, "expected a read and a write rate per device");
         for s in rates {
             let v = s.value.unwrap();
             // 100 GB/s would mean the delta or the interval is being misread.

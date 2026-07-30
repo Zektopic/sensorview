@@ -30,7 +30,7 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -51,8 +51,27 @@ jobs:
         if: matrix.platform == 'windows-latest'
         run: dotnet publish sidecar -c Release -o sidecar/publish
 
+      # Failing test names are echoed as ::error:: annotations so they show up
+      # on the PR and in the checks API. Without this a failure is just
+      # "exit code 101" and you have to open the raw log to learn anything —
+      # which is painful when the failure only reproduces on one runner OS.
       - name: Run tests
-        run: cargo test
+        shell: bash
+        run: |
+          set +e
+          cargo test --no-fail-fast 2>&1 | tee test-output.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::group::Failure summary"
+            grep -E '^test .* FAILED$' test-output.txt | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            # The panic messages themselves, which say *why*.
+            grep -E "panicked at|assertion .* failed" test-output.txt | head -20 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            echo "::endgroup::"
+          fi
+          exit "$status"
 
       # The web tier's correctness argument rests on never holding a lock guard
       # across an await; make that a build failure rather than a review habit.
@@ -70,7 +89,7 @@ jobs:
         run: cargo build --release
 
       - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+        run: cargo install cargo-packager --version 0.11.8 --locked
 
       - name: Package installers
         run: cargo packager --release --formats ${{ matrix.formats }} --verbose
