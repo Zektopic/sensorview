@@ -11,6 +11,12 @@
 //!
 //! All symbols are resolved at runtime (see `dynlib`) and every failure path
 //! yields zero sensors rather than a panic.
+//!
+//! Deliberate trade-off: the service list is enumerated **once**, at startup,
+//! and never refreshed. That is what keeps the published sensor set fixed (see
+//! [`HidSensors::temperatures`]). The cost is that a sensor which only appears
+//! later — a probe that comes up with an external display, say — is not picked
+//! up until the app restarts.
 
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, TCFType};

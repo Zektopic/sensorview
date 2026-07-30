@@ -1,68 +1,83 @@
-# SensorView
+# SensorView — application
 
-A **native**, cross-platform, HWiNFO-style hardware monitor written in pure Rust
-(eframe/egui — real native windows, no webview, no Electron). This app is a
-ground-up rewrite of the C# OpenHardwareMonitor found in the repository root;
-the original C# remains as the authoritative reference for low-level sensor
-access.
+This directory holds the Rust application, which is what actually ships.
 
-> HWiNFO is a proprietary product. SensorView reproduces a HWiNFO-*style* dense
-> sensor UI and feature set; it is not affiliated with or endorsed by HWiNFO.
+**See the [root README](../README.md)** for features, platform support, install
+instructions, the comparison against other monitors and the full technical
+breakdown. This file only covers working inside `app/`.
 
-## Architecture (hybrid, migrate-to-Rust)
-
-The core exposes a single `SensorSource` trait so sensor backends can migrate
-from .NET to Rust one device group at a time without any UI or data-model
-changes:
-
-| Backend | Status | Coverage |
-| --- | --- | --- |
-| `demo` | now | Synthetic data — exercises the whole pipeline w/o drivers |
-| `lhm_bridge` | next (Windows) | Full — bundles [LibreHardwareMonitor] as a sidecar |
-| `native` | growing | Pure-Rust engine (WinRing0 FFI, NVML/ADL, Super-I/O, Linux `/sys`, macOS IOKit) |
-
-```
-app/
-├── src/
-│   ├── main.rs      # eframe entry + background poll thread
-│   ├── ui.rs        # HWiNFO-style native UI (dense sensors table)
-│   ├── model.rs     # SensorType / HardwareType / Sensor / Hardware
-│   ├── poll.rs      # Monitor: min/max/avg + history ring buffers (+ tests)
-│   └── source/      # SensorSource trait + backends
-├── assets/          # window + exe icons
-└── Cargo.toml       # incl. cargo-packager config (NSIS / deb / dmg)
-```
-
-The data model mirrors OpenHardwareMonitor's `Hardware/ISensor.cs` and
-`Hardware/IHardware.cs` enums exactly.
-
-## Build & run
-
-Prereqs: [Rust](https://rustup.rs) (MSVC toolchain on Windows; VS Build Tools +
-Windows SDK for the linker).
+## Quick start
 
 ```bash
-cd app
-cargo run --release
+cargo run --release                  # real sensors for your platform
+SENSORVIEW_SOURCE=demo cargo run     # synthetic data — no drivers, good for UI work
+cargo run --no-default-features      # GUI only, no listening socket
 ```
 
-## Installers
+## Layout
 
-CI (`.github/workflows/`) builds on every push and publishes on `v*` tags via
-[cargo-packager]: NSIS setup `.exe` (Windows), `.deb`/`.AppImage` (Linux),
-`.dmg` (macOS). Locally: `cargo packager --release --formats nsis`.
+```
+src/
+├── main.rs        # entry point; wires the poll, inventory, web and UI threads
+├── model/         # Sensor / Hardware model, storage health, PCIe topology, hex blobs
+├── source/        # SensorSource trait + backends
+│   ├── lhm_bridge.rs   Windows — .NET LibreHardwareMonitor sidecar over stdout JSON
+│   ├── macos/          macOS   — IOKit (iokit, hid, ioreport, freq, dvfs, gpu, …)
+│   ├── linux.rs        Linux   — sysfs hwmon + procfs
+│   ├── firmware.rs     ACPI/SMBIOS tables (Windows + Linux)
+│   └── demo.rs         synthetic
+├── poll.rs        # fast lane (~1 Hz) + min/max/avg
+├── inventory.rs   # slow lane (~30 s): S.M.A.R.T., SPD, PCIe, firmware
+├── sysinfo.rs     # one-shot static system info, per platform
+├── ui/            # egui windows: main, sensors, summary, graphs, hex, settings
+└── web/           # axum server: REST, WebSocket, Prometheus, embedded dashboard
+sidecar/           # C# LibreHardwareMonitor bridge (Windows only)
+web-dashboard/     # static assets, embedded into the binary
+installer/         # Inno Setup script (Windows)
+assets/            # window + executable icons
+```
 
-## Roadmap (feature branches)
+## Adding a sensor backend
 
-1. `feature/scaffold` — project skeleton ✅
-2. `feature/ci-packaging` — CI for exe/deb/dmg ✅
-3. `feature/sensor-core` — SensorSource + poll engine + native UI ✅ (this branch)
-4. `feature/lhm-bridge` — LibreHardwareMonitor sidecar → full Windows sensors
-5. `feature/ui-sensors-table` — full HWiNFO sensors-window fidelity
-6. `feature/ui-system-summary` — System Summary window
-7. `feature/ui-graphs-logging` — graphs, CSV logging, report export
-8. `feature/tray-settings` — tray icon, settings/units, autostart
-9–11. `feature/native-*` — pure-Rust sensor engine (CPU, GPU, Linux/macOS)
+Implement `SensorSource` (see `src/source/mod.rs`), add an arm to
+`default_source()`, and **widen the fallback arm's `not(any(...))` to exclude
+your platform**. Those are sequential exclusive `cfg` blocks, not `else if` — a
+platform named in an arm *and* left in the fallback compiles both, and the last
+one wins.
+
+The data model mirrors OpenHardwareMonitor's `Hardware/ISensor.cs` and
+`Hardware/IHardware.cs`, so the C# reference in the repository root and this port
+share a vocabulary.
+
+## Checks
+
+These are exactly what CI runs:
+
+```bash
+cargo test
+cargo clippy --all-targets -- -D warnings -D clippy::await_holding_lock
+cargo check --no-default-features --all-targets
+```
+
+Hardware-dependent tests print `SKIP: … not available` and pass when the device
+or API is absent, so they stay green on virtualized CI runners while still
+asserting ranges, uniqueness and stability on real hardware. Two `#[ignore]`d
+probes dump live readings:
+
+```bash
+cargo test -- --ignored --nocapture dump_live_tree
+cargo test -- --ignored --nocapture dump_system_summary
+```
+
+## Packaging
+
+```bash
+cargo install cargo-packager --version 0.11.8 --locked
+cargo packager --release --formats dmg     # or nsis / deb / appimage
+```
+
+On Windows, build the sidecar first:
+`dotnet publish sidecar -c Release -o sidecar/publish`.
 
 [LibreHardwareMonitor]: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
 [cargo-packager]: https://github.com/crabnebula-dev/cargo-packager

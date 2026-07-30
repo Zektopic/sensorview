@@ -36,7 +36,6 @@ an attempt to avoid all three.
 | Windows / macOS / Linux | Windows only | varies | one platform each | **all three, one codebase** |
 | Real sensors, not estimates | yes | often estimated | yes | **yes, per-platform native** |
 | Native UI | yes | no (Chromium) | terminal | **yes (egui, GPU-drawn)** |
-| Memory footprint | low | 200 MB+ | low | **~110 MB RSS measured** |
 | Remote / headless access | paid tier or none | sometimes | no | **built-in HTTP + WebSocket** |
 | Prometheus / Grafana | rarely | rarely | no | **`/metrics` built in** |
 | Kernel driver required | yes (Ring 0) | n/a | sometimes | **Windows only — never on macOS** |
@@ -94,17 +93,22 @@ is generated per run and never written to disk.
 
 | | Windows | macOS (Apple Silicon) | Linux |
 |---|---|---|---|
-| Backend | LibreHardwareMonitor sidecar | native IOKit | native sysfs/procfs |
-| Temperatures | ✅ | ✅ | ✅ |
-| Power | ✅ | ✅ | hwmon-dependent |
-| Clocks | ✅ | ✅ | hwmon-dependent |
-| Fan speeds | ✅ | —¹ | ✅ |
-| Load / memory | ✅ | ✅ | ✅ |
-| GPU | ✅ | ✅ | hwmon-dependent |
-| Storage | ✅ | ✅ | hwmon-dependent |
+| Backend | LibreHardwareMonitor sidecar | native IOKit | native sysfs / procfs |
+| Temperatures | ✅ | ✅ | ✅ hwmon |
+| Power | ✅ | ✅ | ✅ hwmon |
+| Voltages | ✅ | ✅ (core VID) | ✅ hwmon |
+| Clocks | ✅ | ✅ | ✅ cpufreq |
+| Fan speeds | ✅ | —¹ | ✅ hwmon |
+| Load / memory | ✅ | ✅ | ✅ procfs |
+| GPU | ✅ | ✅ | ✅ via amdgpu/i915/nouveau hwmon |
+| Storage | ✅ throughput | ✅ throughput | temperature only |
 | Battery | ✅ | ✅ | — |
 | Firmware tables | ACPI + SMBIOS | —² | ACPI |
-| Needs elevation | **yes** (Ring-0 driver) | **no** | root for some sysfs nodes |
+| Needs elevation | **yes** (Ring-0 driver) | **no** | no (ACPI tables need root) |
+
+Linux coverage is whatever your loaded `hwmon` drivers expose — `coretemp`,
+`k10temp`, `amdgpu`, `nct6775`, `drivetemp` and so on. With none loaded you get
+CPU load and memory from procfs and little else.
 
 ¹ Not implemented. Fans would come from the same HID sensor plane as
 temperatures (a different usage page), but development happened on a fanless
@@ -129,8 +133,7 @@ Download the installer for your platform from [Releases](https://github.com/Zekt
 
 **macOS first launch:** the `.dmg` is currently unsigned and un-notarized, so
 Gatekeeper will block it. Open **System Settings → Privacy & Security**, find the
-blocked-app notice, and choose **Open Anyway**. (On older macOS the right-click →
-Open trick also works.)
+blocked-app notice, and choose **Open Anyway**.
 
 **Windows:** full sensor coverage needs a Ring-0 driver. If Memory Integrity/HVCI
 blocks the classic WinRing0 driver, install [PawnIO](https://pawnio.eu/) — the
@@ -330,7 +333,8 @@ tagged `v*` pushes publish installers to Releases.
 - NVMe S.M.A.R.T. health on macOS reports identity only — Apple's controller
   isn't a standard NVMe endpoint, so the health log page is unreachable; those
   fields report `Unknown` rather than a fabricated "Good".
-- Linux coverage depends on what your `hwmon` drivers expose.
+- Linux storage reports temperature only (via `drivetemp`), not throughput.
+- Linux coverage depends on which `hwmon` drivers are loaded.
 
 ## Contributing
 
