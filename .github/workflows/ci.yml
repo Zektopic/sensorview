@@ -92,7 +92,8 @@ jobs:
       #   gui            desktop app with no listening socket
       #   cli+push       push telemetry to a collector, no dashboard
       #   gui+web        the previous meaning of this check
-      #   cli+web+push   the full headless deployment
+      #   cli+tui        `sensorview top` without a dashboard
+      #   cli+web+push+tui  the full headless deployment
       #
       # Clippy rather than check: a headless build is shipped, so it has to be
       # warning-clean, not merely compilable.
@@ -100,7 +101,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          for features in "" "web" "gui" "push" "gui,web" "web,push"; do
+          for features in "" "web" "gui" "push" "tui" "gui,web" "web,push,tui"; do
             echo "::group::--no-default-features --features '$features'"
             cargo clippy --no-default-features --features "$features" \
               --all-targets -- -D warnings

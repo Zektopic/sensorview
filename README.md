@@ -77,6 +77,7 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - **One-shot queries** — `sensors`, `get`, `info`, `report`; JSON or text; real
   exit codes, so `sensorview get … || alert` works
 - **Daemon mode** — `sensorview daemon`, with clean Ctrl-C shutdown
+- **Live terminal UI** — `sensorview top`, for watching a headless box over SSH
 - **Streaming** — `sensorview stream`, NDJSON or CSV on stdout, pipe-friendly
 - **Push sinks** — InfluxDB line protocol or a JSON webhook, on their own
   thread with backoff, so a collector that is down never stalls the poller
@@ -115,6 +116,7 @@ sensorview get "no such sensor"        # exit code 1
 sensorview info                        # System Summary as text
 sensorview report                      # the GUI's text report, from the CLI
 
+sensorview top                         # live terminal dashboard (q quits)
 sensorview daemon --port 9090 --log    # headless; Ctrl-C stops it cleanly
 
 # Streaming — one record per poll, until Ctrl-C or -n
@@ -148,7 +150,7 @@ Dropping the `gui` feature compiles the windowing stack out entirely:
 | `--no-default-features --features web` | **1.3 MB** | CLI + dashboard — for servers and containers |
 | `--no-default-features` | **704 KB** | CLI only |
 
-Features are `gui`, `web` and `push`; all three are on by default and CI builds
+Features are `gui`, `web`, `push` and `tui`; all are on by default and CI builds
 every combination that ships.
 
 ## Platform support

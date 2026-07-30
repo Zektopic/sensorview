@@ -13,6 +13,8 @@ pub mod daemon;
 pub mod push;
 pub mod render;
 pub mod stream;
+#[cfg(feature = "tui")]
+pub mod tui;
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -69,6 +71,13 @@ pub enum Command {
     },
     /// Write a full text report, the same one the GUI's Report button produces.
     Report,
+    /// Live terminal dashboard. Press q to quit, r to reset min/max.
+    #[cfg(feature = "tui")]
+    Top {
+        /// Only show sensors whose name contains this (case-insensitive).
+        #[arg(long, value_name = "TEXT")]
+        filter: Option<String>,
+    },
     /// Stream telemetry to stdout until interrupted (or `-n` records).
     Stream {
         /// Output format.
@@ -229,6 +238,9 @@ fn one_shot(rt: &Runtime, command: Command) -> ExitCode {
                 }
             }
         }
+
+        #[cfg(feature = "tui")]
+        Command::Top { filter } => tui::run(rt, filter, READY_TIMEOUT),
 
         Command::Stream { format, filter, count } => {
             stream::run(rt, format, filter, count, READY_TIMEOUT)
