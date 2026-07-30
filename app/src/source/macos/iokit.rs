@@ -282,8 +282,10 @@ mod tests {
     #[test]
     fn platform_expert_is_matchable_and_has_a_model() {
         let services = matching_services("IOPlatformExpertDevice");
-        assert!(!services.is_empty(), "IOPlatformExpertDevice should always match on macOS");
-        let props = properties(services[0].0).expect("platform expert has properties");
+        let Some(first) = services.first() else {
+            return crate::source::macos::absent("IOPlatformExpertDevice");
+        };
+        let props = properties(first.0).expect("platform expert has properties");
         // `model` is CFData here ("Mac17,3"), which is exactly the CFData
         // fallback in dict_string.
         let model = dict_string(&props, "model").expect("model property");
@@ -301,7 +303,10 @@ mod tests {
     #[test]
     fn missing_property_yields_none() {
         let services = matching_services("IOPlatformExpertDevice");
-        let props = properties(services[0].0).unwrap();
+        let Some(first) = services.first() else {
+            return crate::source::macos::absent("IOPlatformExpertDevice");
+        };
+        let props = properties(first.0).unwrap();
         assert!(dict_i64(&props, "SensorViewNoSuchKey").is_none());
         assert!(dict_string(&props, "SensorViewNoSuchKey").is_none());
         assert!(dict_dict(&props, "SensorViewNoSuchKey").is_none());

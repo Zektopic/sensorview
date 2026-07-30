@@ -188,6 +188,18 @@ fn main() -> eframe::Result {
         }
     }
 
+    if std::env::var("SENSORVIEW_HEADLESS").is_ok() {
+        #[cfg(feature = "web")]
+        if let Some(url) = web.url() {
+            println!("SensorView running in headless mode.");
+            println!("Dashboard URL: {url}");
+        } else {
+            println!("SensorView running in headless mode.");
+        }
+        std::thread::park();
+        return Ok(());
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SensorView")
