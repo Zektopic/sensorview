@@ -105,12 +105,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `artifacts` is what gets attached to the release, and it is listed
+          # per platform on purpose: each leg only ever builds its own formats,
+          # so a shared list could never be checked for completeness — every leg
+          # would legitimately miss most of it. Per-platform lists are what make
+          # `fail_on_unmatched_files` usable below.
+          #
+          # These paths are relative to the *workspace root*, not to app/. See
+          # the note on the publish step.
           - platform: windows-latest
             formats: nsis
+            artifacts: |
+              app/target/release/*-setup.exe
+              app/target/release/*-portable.exe
           - platform: ubuntu-22.04
             formats: deb,appimage
+            artifacts: |
+              app/target/release/*.deb
+              app/target/release/*.AppImage
           - platform: macos-latest
             formats: dmg
+            artifacts: |
+              app/target/release/*.dmg
     runs-on: ${{ matrix.platform }}
     defaults:
       run:
@@ -253,36 +269,32 @@ jobs:
           cp target-portable/release/sensorview.exe "$out"
           ls -lh "$out"
 
-      # Names the artifacts so the release page is readable, and — more to the
-      # point — proves each one exists. Publishing silently attaches whatever
-      # the globs happen to match, so a format that failed to build would
-      # otherwise show up as a release that is simply missing a platform.
-      - name: List and check the artifacts
+      # Resolves the *same globs the upload will use*, from the same directory
+      # it will use them from. That equivalence is the point: v1.0.3 built every
+      # installer correctly and still published an empty release, because the
+      # only check ran from app/ while the upload ran from the workspace root.
+      # A check that cannot disagree with the upload cannot miss that again.
+      - name: Check the release artifacts exist
         shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          ARTIFACTS: ${{ matrix.artifacts }}
         run: |
           set -euo pipefail
-          echo "::group::Artifacts built on ${{ matrix.platform }}"
-          ls -lh target/release/*-setup.exe target/release/*-portable.exe \
-                 target/release/*.deb target/release/*.AppImage \
-                 target/release/*.dmg 2>/dev/null || true
-          echo "::endgroup::"
-
           missing=""
-          case "${{ matrix.platform }}" in
-            windows-latest)
-              compgen -G "target/release/*-setup.exe"    >/dev/null || missing="$missing nsis-setup.exe"
-              compgen -G "target/release/*-portable.exe" >/dev/null || missing="$missing portable.exe"
-              ;;
-            ubuntu-22.04)
-              compgen -G "target/release/*.deb"      >/dev/null || missing="$missing .deb"
-              compgen -G "target/release/*.AppImage" >/dev/null || missing="$missing .AppImage"
-              ;;
-            macos-latest)
-              compgen -G "target/release/*.dmg" >/dev/null || missing="$missing .dmg"
-              ;;
-          esac
+          echo "::group::Artifacts for ${{ matrix.platform }}"
+          while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            if compgen -G "$pattern" >/dev/null; then
+              # shellcheck disable=SC2086 -- the glob must stay unquoted here.
+              ls -lh $pattern
+            else
+              missing="$missing $pattern"
+            fi
+          done <<< "$ARTIFACTS"
+          echo "::endgroup::"
           if [ -n "$missing" ]; then
-            echo "::error::${{ matrix.platform }} produced no:$missing"
+            echo "::error::${{ matrix.platform }} matched no files for:$missing"
             exit 1
           fi
 
@@ -317,10 +329,14 @@ jobs:
             Windows asks for administrator rights on launch: Super-I/O, MSR and
             SMBus sensors are unreadable without them. Declining still gets you
             the process list and the sensors that do not need a driver.
-          # Also relative to app/ via the job default.
-          files: |
-            target/release/*-setup.exe
-            target/release/*-portable.exe
-            target/release/*.deb
-            target/release/*.AppImage
-            target/release/*.dmg
+          # Paths are relative to the WORKSPACE ROOT, so they carry the `app/`
+          # prefix — `defaults.run.working-directory` applies only to `run:`
+          # steps, never to a `uses:` action. This is exactly how v1.0.3
+          # published a release with no installers attached: the packager had
+          # built them, the globs matched nothing from the root, and the action
+          # only warns about that by default.
+          files: ${{ matrix.artifacts }}
+          # So a glob that matches nothing is a failed release rather than a
+          # quietly empty one. The lists are per-platform above precisely so
+          # this can be switched on.
+          fail_on_unmatched_files: true
