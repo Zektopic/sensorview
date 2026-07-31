@@ -12,7 +12,7 @@ with no Electron, no webview, and no telemetry.
 
 [![CI](https://github.com/Zektopic/sensorview/actions/workflows/ci.yml/badge.svg)](https://github.com/Zektopic/sensorview/actions/workflows/ci.yml)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-blue)
-![Rust](https://img.shields.io/badge/rust-1.92%2B-orange)
+![Rust](https://img.shields.io/badge/rust-1.95%2B-orange)
 
 </div>
 
@@ -74,10 +74,16 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - Configurable poll interval, min/max reset, light/dark/grey themes
 
 ### Task Manager
-- **Processes** — PID, CPU %, memory, owner; sortable, filterable, with
-  end/force-kill behind a confirmation
-- **Performance** — Mission Center-style sidebar (CPU, GPU, Memory, Disk *n*,
-  Network *n*) with sparklines, a large graph and a stats grid
+- **Processes** — PID, name, owner, CPU %, memory, virtual size, disk
+  read/write and uptime; sortable columns, a filter box, and end/force-kill
+  behind a confirmation. Rows are virtualised, so a 700-process list scrolls
+  without cost
+- **Performance** — a sidebar of category rows (CPU, GPU, Memory, Disk *n*,
+  Network *n*), each with a mini sparkline and its current value, and the
+  selected category filling the pane with a large graph and a stats grid. It
+  reads the telemetry that is already being collected, so it adds no polling
+- **The same data from the terminal** — `sensorview ps` and `sensorview kill`,
+  which is what you want over SSH on a box with no display
 - The process collector runs **only while the window is open** — enumerating
   every process is not free, and a monitor that costs CPU when nobody is
   looking at it is a bug
@@ -136,14 +142,16 @@ sensorview sensors --json | jq '.[]'   # flat JSON array, one object per sensor
 
 sensorview get "CPU Package Power"     # -> CPU Package Power: 21.5 W
 sensorview get "PMU tdie6" --raw       # -> 38.77   (bare number, for scripts)
-
-sensorview ps                          # processes, busiest first
-sensorview ps --sort mem -n 10 --json  # pipe into jq
-sensorview kill <pid> [--force]
 sensorview get "no such sensor"        # exit code 1
 
 sensorview info                        # System Summary as text
 sensorview report                      # the GUI's text report, from the CLI
+
+# Processes — the Task Manager's data, without the window
+sensorview ps                          # busiest first
+sensorview ps --sort mem --limit 10    # sort by cpu | mem | pid | name
+sensorview ps --filter chrome --json   # pipe into jq
+sensorview kill 4711                   # SIGTERM; --force sends SIGKILL
 
 sensorview top                         # live terminal dashboard (q quits)
 sensorview daemon --port 9090 --log    # headless; Ctrl-C stops it cleanly
@@ -241,7 +249,10 @@ installer offers this, and Settings → Driver Management explains the state.
 
 ## Build from source
 
-Requires [Rust](https://rustup.rs) 1.92+.
+Requires [Rust](https://rustup.rs) 1.95+. The floor is not cosmetic: cargo
+honours `rust-version` during resolution, so an older toolchain silently picks
+*older dependency versions* rather than failing — which is how the process
+collector once ended up building against `sysinfo` 0.38 instead of 0.39.
 
 ```bash
 git clone https://github.com/Zektopic/sensorview.git
@@ -267,7 +278,8 @@ Useful flags:
 
 ```bash
 SENSORVIEW_SOURCE=demo cargo run     # synthetic data, no drivers — good for UI work
-cargo run --no-default-features      # GUI only, drops the web tier (no listening socket)
+cargo run --no-default-features --features gui   # GUI without the web tier (no listening socket)
+cargo run --no-default-features -- sensors       # headless: CLI only, no windowing stack
 cargo packager --release --formats dmg   # or nsis / deb / appimage
 ```
 
@@ -277,19 +289,24 @@ cargo packager --release --formats dmg   # or nsis / deb / appimage
 
 ### Threading model
 
-Four threads, deliberately decoupled so the UI can never be blocked by hardware.
+Deliberately decoupled, so the UI can never be blocked by hardware.
 
 ```
 ┌──────────────┐   ArcSwap    ┌──────────────┐
 │ poll thread  │─────────────▶│  UI (main)   │  eframe/egui, winit needs main
-│  fast lane   │              └──────────────┘
-│  ~1 Hz       │  broadcast   ┌──────────────┐
+│  fast lane   │              └──────▲───────┘
+│  ~1 Hz       │  broadcast   ┌──────┴───────┐
 └──────┬───────┘─────────────▶│  web thread  │  tokio + axum
        │                      └──────────────┘
-┌──────▼───────┐
-│ slow lane    │  ~30 s — S.M.A.R.T., SPD, PCIe topology, firmware tables
-└──────────────┘
+┌──────▼───────┐              ┌──────────────┐
+│ slow lane    │              │ process      │  only while the Task Manager
+│  ~30 s       │              │ collector    │  window is open
+└──────────────┘              └──────────────┘
 ```
+
+The slow lane runs S.M.A.R.T., SPD, PCIe topology and firmware tables. Push
+sinks, when configured, get a thread of their own as well, so a collector that
+is down applies backoff without ever stalling the poller.
 
 The latest telemetry frame is published through an `ArcSwap`, so a UI read is a
 single atomic pointer load — the render loop never contends with the poller and
@@ -356,9 +373,23 @@ the app. This is fine for `.dmg` distribution and notarization, but rules out th
 Mac App Store. `AppleSMC` is deliberately unused — it does not exist on M-series
 Macs.
 
-**Linux** reads `/sys/class/hwmon`, `/proc/stat` and `/proc/meminfo` directly,
-plus `/sys/class/dmi/id` for board identity and `/sys/firmware/acpi/tables` for
-the Hex Viewer.
+**Linux** reads sysfs and procfs directly, with no daemon and nothing beyond
+what a stock kernel already exposes:
+
+| Data | Path |
+|---|---|
+| Temperatures, fans, voltages | `/sys/class/hwmon` |
+| Total and per-core CPU load | `/proc/stat` — the `cpu` and `cpuN` lines |
+| Memory | `/proc/meminfo` |
+| Clocks | `cpufreq` |
+| Disk throughput | `/proc/diskstats`, differenced per poll |
+| Network throughput | `/proc/net/dev` |
+| GPU utilisation | `/sys/class/drm/*/device/gpu_busy_percent` (amdgpu) |
+| Board identity | `/sys/class/dmi/id` |
+| Firmware tables | `/sys/firmware/acpi/tables` |
+
+Only the hwmon row depends on which drivers happen to be loaded; everything
+else is always there.
 
 ### Design constraints worth knowing
 
@@ -388,6 +419,8 @@ sensorview/
 │   │   │   └── demo.rs        #   synthetic
 │   │   ├── poll.rs            # fast lane + min/max/avg
 │   │   ├── inventory.rs       # slow lane
+│   │   ├── procs/             # process enumeration (Task Manager + `ps`)
+│   │   ├── cli/               # clap commands: sensors, get, ps, stream, top, daemon
 │   │   ├── ui/                # egui windows
 │   │   └── web/               # axum server, REST, WebSocket, Prometheus
 │   ├── sidecar/               # C# LibreHardwareMonitor bridge (Windows)
@@ -405,8 +438,14 @@ sensorview/
 cd app
 cargo test                                              # unit + hardware-probe tests
 cargo clippy --all-targets -- -D warnings               # CI gate
-cargo check --no-default-features --all-targets         # GUI-only build must keep working
 ```
+
+CI runs that clippy gate over **eight** feature configurations — `default`,
+`--no-default-features`, and each of `gui`, `web`, `push`, `tui`, `gui,web`,
+`web,push,tui`. That is not busywork: a module reachable from the CLI but not
+the GUI (or the reverse) produces dead-code warnings in exactly one
+configuration, and the headless build is a shipped artifact, so it has to hold
+the same bar as the GUI one.
 
 Hardware-dependent tests skip with a `SKIP:` note when the underlying device or
 API isn't present, so they stay green on virtualized CI runners while still
@@ -435,6 +474,12 @@ tagged `v*` pushes publish installers to Releases.
   equivalent and NVIDIA needs NVML.
 - Temperature/fan/voltage coverage on Linux still depends on which `hwmon`
   drivers are loaded.
+- The Task Manager lists **processes, not applications** — no grouping of a
+  browser's helpers under one row, and no Services page. Per-process **GPU**
+  usage is absent too: there is no public API for it on macOS.
+- The Linux **GUI** is compiled and tested in CI but has not been run against a
+  display; Linux development happens on a headless server, so the window itself
+  is exercised on macOS only.
 
 ## Contributing
 
