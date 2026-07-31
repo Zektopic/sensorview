@@ -140,6 +140,7 @@ mod tests {
             virt_bytes: 20 * 1024 * 1024,
             disk_read_bytes: 0,
             disk_write_bytes: 0,
+            disk_bps: None,
             run_time_s: 1,
         }
     }
