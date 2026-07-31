@@ -46,6 +46,9 @@ mod format;
 mod inventory;
 mod logging;
 mod model;
+/// Windows-only, and only when the sidecar is compiled in — see the module doc.
+#[cfg(all(windows, feature = "portable"))]
+mod portable;
 mod poll;
 mod procs;
 mod report;

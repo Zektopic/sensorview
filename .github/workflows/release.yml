@@ -230,6 +230,62 @@ jobs:
       - name: Package installers
         run: cargo packager --release --formats ${{ matrix.formats }} --verbose
 
+      # The portable artifact: one .exe that runs from a USB stick or a network
+      # share with nothing beside it.
+      #
+      # `--features portable` compiles the LibreHardwareMonitor sidecar into the
+      # binary, which is what makes that true — every Windows sensor comes from
+      # that sidecar, so a bare sensorview.exe would open reporting nothing at
+      # all. It costs ~70 MB, which is why only this artifact pays for it.
+      #
+      # Built into its own target directory so it cannot overwrite the binary
+      # cargo-packager has just wrapped into the installer, then copied into
+      # target/release/ under its final name for the upload glob below.
+      - name: Build the portable exe (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo build --release --features portable --target-dir target-portable
+          out="target/release/SensorView-${VERSION}-portable.exe"
+          cp target-portable/release/sensorview.exe "$out"
+          ls -lh "$out"
+
+      # Names the artifacts so the release page is readable, and — more to the
+      # point — proves each one exists. Publishing silently attaches whatever
+      # the globs happen to match, so a format that failed to build would
+      # otherwise show up as a release that is simply missing a platform.
+      - name: List and check the artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::Artifacts built on ${{ matrix.platform }}"
+          ls -lh target/release/*-setup.exe target/release/*-portable.exe \
+                 target/release/*.deb target/release/*.AppImage \
+                 target/release/*.dmg 2>/dev/null || true
+          echo "::endgroup::"
+
+          missing=""
+          case "${{ matrix.platform }}" in
+            windows-latest)
+              compgen -G "target/release/*-setup.exe"    >/dev/null || missing="$missing nsis-setup.exe"
+              compgen -G "target/release/*-portable.exe" >/dev/null || missing="$missing portable.exe"
+              ;;
+            ubuntu-22.04)
+              compgen -G "target/release/*.deb"      >/dev/null || missing="$missing .deb"
+              compgen -G "target/release/*.AppImage" >/dev/null || missing="$missing .AppImage"
+              ;;
+            macos-latest)
+              compgen -G "target/release/*.dmg" >/dev/null || missing="$missing .dmg"
+              ;;
+          esac
+          if [ -n "$missing" ]; then
+            echo "::error::${{ matrix.platform }} produced no:$missing"
+            exit 1
+          fi
+
       # tag_name is explicit: on a manual run the workflow's own ref is a
       # branch, so the action would otherwise attach the release to the wrong
       # thing. All three legs target the same release and the action merges
@@ -243,16 +299,28 @@ jobs:
           body: |
             SensorView ${{ needs.prepare.outputs.version }}
 
-            Download the installer for your platform below.
+            Download the build for your platform below.
 
-            | Platform | File |
-            |---|---|
-            | Windows | `*-setup.exe` |
-            | macOS (Apple Silicon) | `*.dmg` — unsigned; System Settings → Privacy & Security → Open Anyway |
-            | Linux | `*.deb` / `*.AppImage` |
+            | Platform | File | |
+            |---|---|---|
+            | Windows | `SensorView_*_x64-setup.exe` | Installer |
+            | Windows | `SensorView-*-portable.exe` | Single file, no install — see below |
+            | macOS (Apple Silicon) | `*.dmg` | Unsigned; System Settings → Privacy & Security → Open Anyway |
+            | Linux | `*.deb` / `*.AppImage` | |
+
+            **The portable Windows build** is one self-contained `.exe`. It
+            carries the LibreHardwareMonitor sensor bridge inside it and unpacks
+            it to `%LOCALAPPDATA%\SensorView\bridge\` on first run, so it works
+            from a USB stick with nothing beside it. That is why it is much
+            larger than the installer.
+
+            Windows asks for administrator rights on launch: Super-I/O, MSR and
+            SMBus sensors are unreadable without them. Declining still gets you
+            the process list and the sensors that do not need a driver.
           # Also relative to app/ via the job default.
           files: |
             target/release/*-setup.exe
+            target/release/*-portable.exe
             target/release/*.deb
             target/release/*.AppImage
             target/release/*.dmg

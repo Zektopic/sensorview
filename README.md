@@ -245,9 +245,17 @@ Download the installer for your platform from [Releases](https://github.com/Zekt
 
 | Platform | Artifact | Notes |
 |---|---|---|
-| Windows | `SensorView-setup.exe` (NSIS) | Bundles the sensor sidecar; optionally installs the PawnIO driver |
+| Windows | `SensorView_<ver>_x64-setup.exe` (NSIS) | Bundles the sensor sidecar; optionally installs the PawnIO driver |
+| Windows | `SensorView-<ver>-portable.exe` | One file, no install — see below |
 | macOS | `SensorView_<ver>_aarch64.dmg` | Apple Silicon only; **unsigned** — see below |
 | Linux | `.deb` / `.AppImage` | |
+
+**The portable Windows build** is a single self-contained `.exe`. Every Windows
+sensor comes from the LibreHardwareMonitor sidecar, so the portable build
+carries that sidecar inside the binary and unpacks it to
+`%LOCALAPPDATA%\SensorView\bridge\` the first time it runs — which is why it is
+several times the size of the installer, and why it works from a USB stick with
+nothing beside it. Delete that folder to reclaim the space once you are done.
 
 **macOS first launch:** the `.dmg` is currently unsigned and un-notarized, so
 Gatekeeper will block it. Open **System Settings → Privacy & Security**, find the
