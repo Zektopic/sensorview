@@ -32,6 +32,52 @@ enum Tab {
     Processes,
 }
 
+/// Every text size and the geometry that has to move with it, in one place.
+///
+/// Two reasons this is a struct rather than literals at each call site. The
+/// window previously ignored `settings.font_scale`, so the toolbar's zoom
+/// control did nothing here; deriving from it fixes that for free. And the
+/// sidebar cards are hand-painted at absolute offsets — raising the title size
+/// without moving the card height and the thumbnail box would overflow the
+/// card and re-break the title elision.
+#[derive(Clone, Copy)]
+struct Type {
+    /// Table cell text.
+    body: f32,
+    /// Process names — the column people scan, so it is set apart.
+    name: f32,
+    /// Column heading label.
+    header: f32,
+    /// The machine-wide total above a heading.
+    total: f32,
+    /// Sidebar card title.
+    title: f32,
+    /// Sidebar card reading.
+    value: f32,
+    /// The large reading under the graph.
+    headline: f32,
+    row_h: f32,
+    card_h: f32,
+}
+
+impl Type {
+    fn new(scale: f32) -> Self {
+        // Same bounds the toolbar's zoom control clamps to.
+        let s = scale.clamp(0.75, 2.0);
+        Self {
+            body: 12.0 * s,
+            name: 12.5 * s,
+            header: 11.5 * s,
+            total: 13.5 * s,
+            title: 13.0 * s,
+            value: 15.5 * s,
+            headline: 30.0 * s,
+            row_h: 24.0 * s,
+            card_h: 62.0 * s,
+        }
+    }
+}
+
 /// Per-window state, kept in egui's memory so it survives frames without
 /// widening `Shared` for something only this window cares about.
 #[derive(Clone)]
@@ -75,6 +121,8 @@ fn default_tab() -> Tab {
 
 pub fn show(ui: &mut egui::Ui, s: &Shared) {
     let pal = s.palette();
+    // Honours the toolbar's zoom control, which this window used to ignore.
+    let ty = Type::new(s.settings.read().map(|st| st.font_scale).unwrap_or(1.0));
 
     // Closing must stop the collector, not just hide the window — otherwise it
     // keeps enumerating processes forever behind a closed window.
@@ -107,7 +155,8 @@ pub fn show(ui: &mut egui::Ui, s: &Shared) {
                 {
                     let active = state.tab == tab;
                     let text = RichText::new(label)
-                        .size(12.0)
+                        .size(ty.title)
+                        .strong()
                         .color(if active { pal.text } else { pal.text_dim });
                     if ui.selectable_label(active, text).clicked() {
                         state.tab = tab;
@@ -122,8 +171,8 @@ pub fn show(ui: &mut egui::Ui, s: &Shared) {
         });
 
     match state.tab {
-        Tab::Performance => performance_tab(ui, s, &pal, &mut state),
-        Tab::Processes => processes_tab(ui, s, &pal, &mut state),
+        Tab::Performance => performance_tab(ui, s, &pal, &ty, &mut state),
+        Tab::Processes => processes_tab(ui, s, &pal, &ty, &mut state),
     }
 
     confirm_kill_modal(ui, &pal, &mut state);
@@ -152,7 +201,7 @@ fn stop_collector(slot: &Mutex<Option<ProcessCollector>>) {
 
 // ---- Processes -----------------------------------------------------------
 
-fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State) {
+fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, ty: &Type, state: &mut State) {
     let snapshot = match s.procs.lock() {
         Ok(slot) => slot.as_ref().map(|c| c.snapshot()),
         Err(_) => None,
@@ -168,7 +217,7 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
         .frame(egui::Frame::new().fill(pal.bg).inner_margin(egui::Margin::symmetric(8, 4)))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Filter").size(11.0).color(pal.text_dim));
+                ui.label(RichText::new("Filter").size(ty.body).strong().color(pal.text_dim));
                 ui.add(
                     egui::TextEdit::singleline(&mut state.filter)
                         .desired_width(220.0)
@@ -238,7 +287,7 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
                 .filter_map(|r| r.disk_bps)
                 .fold(0.0f64, f64::max) as f32;
 
-            let row_h = 20.0;
+            let row_h = ty.row_h;
             // Virtualised: `body.rows` only builds what is on screen, which
             // matters at ~700 processes.
             TableBuilder::new(ui)
@@ -248,9 +297,9 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
                 .column(Column::exact(72.0))    // cpu
                 .column(Column::exact(84.0))    // memory
                 .column(Column::exact(84.0))    // disk
-                .column(Column::exact(58.0))    // pid
+                .column(Column::exact(72.0))    // pid
                 .column(Column::exact(90.0))    // user
-                .header(34.0, |mut header| {
+                .header(ty.total + ty.header + 12.0, |mut header| {
                     // Windows heads each measured column with the machine-wide
                     // total, so the columns double as a system summary.
                     let total_cpu = snapshot
@@ -260,17 +309,18 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
                         let sum: f64 = rows.iter().filter_map(|r| r.disk_bps).sum();
                         procs::format_rate(Some(sum))
                     });
-                    for (label, total, sort) in [
-                        ("Name", None, Some(Sort::Name)),
-                        ("CPU", total_cpu, Some(Sort::Cpu)),
-                        ("Memory", None, Some(Sort::Memory)),
-                        ("Disk", total_disk, Some(Sort::Disk)),
-                        ("PID", None, Some(Sort::Pid)),
-                        ("User", None, None),
+                    // `right` mirrors the cell alignment below: a left-aligned
+                    // heading over a right-aligned number column is the thing
+                    // that made this table look untidy.
+                    for col in [
+                        Col::text("Name", Some(Sort::Name)),
+                        Col::num("CPU", Some(Sort::Cpu)).with_total(total_cpu.as_deref()),
+                        Col::num("Memory", Some(Sort::Memory)),
+                        Col::num("Disk", Some(Sort::Disk)).with_total(total_disk.as_deref()),
+                        Col::num("PID", Some(Sort::Pid)),
+                        Col::text("User", None),
                     ] {
-                        header.col(|ui| {
-                            sort_header(ui, pal, state, label, total.as_deref(), sort);
-                        });
+                        header.col(|ui| sort_header(ui, pal, ty, state, col));
                     }
                 })
                 .body(|body| {
@@ -278,7 +328,7 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
                         let r = &rows[row.index()];
                         row.col(|ui| {
                             let resp = ui
-                                .label(RichText::new(&r.name).size(11.0).color(pal.text))
+                                .label(RichText::new(&r.name).size(ty.name).strong().color(pal.text))
                                 .on_hover_text(if r.cmd.is_empty() {
                                     r.name.clone()
                                 } else {
@@ -308,7 +358,7 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
                             // "we can't see" and "idle" are different facts.
                             match r.cpu_pct {
                                 None => {
-                                    heat_cell(ui, pal, "—", None);
+                                    heat_cell(ui, pal, ty, "—", None);
                                 }
                                 // Shown as a share of the whole machine, which
                                 // is what a task manager's CPU column means to
@@ -317,7 +367,7 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
                                 // is in the tooltip so nothing is lost.
                                 Some(v) => {
                                     let share = v / cpus;
-                                    heat_cell(ui, pal, &format!("{share:.1}%"), Some(v / peak_cpu))
+                                    heat_cell(ui, pal, ty, &format!("{share:.1}%"), Some(v / peak_cpu))
                                     .on_hover_text(format!(
                                         "{v:.1}% summed across {} logical CPUs",
                                         snapshot.cpu_count
@@ -327,20 +377,20 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
                         });
                         row.col(|ui| {
                             let t = (peak_mem > 0.0).then(|| r.mem_bytes as f32 / peak_mem);
-                            heat_cell(ui, pal, &procs::format_bytes(r.mem_bytes), t);
+                            heat_cell(ui, pal, ty, &procs::format_bytes(r.mem_bytes), t);
                         });
                         row.col(|ui| {
                             let t = r
                                 .disk_bps
                                 .filter(|_| peak_disk > 0.0)
                                 .map(|v| v as f32 / peak_disk);
-                            heat_cell(ui, pal, &procs::format_rate(r.disk_bps), t);
+                            heat_cell(ui, pal, ty, &procs::format_rate(r.disk_bps), t);
                         });
-                        row.col(|ui| mono(ui, pal, &r.pid.to_string()));
+                        row.col(|ui| mono(ui, pal, ty, &r.pid.to_string()));
                         row.col(|ui| {
                             ui.label(
                                 RichText::new(r.user.as_deref().unwrap_or("—"))
-                                    .size(10.5)
+                                    .size(ty.body)
                                     .color(pal.text_dim),
                             );
                         });
@@ -355,6 +405,7 @@ fn processes_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State
 fn heat_cell(
     ui: &mut egui::Ui,
     pal: &Palette,
+    ty: &Type,
     text: &str,
     intensity: Option<f32>,
 ) -> egui::Response {
@@ -373,7 +424,11 @@ fn heat_cell(
     } else {
         pal.value
     };
-    ui.label(RichText::new(text).size(10.5).monospace().color(color))
+    // Right-aligned, like every other numeric column here.
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(RichText::new(text).size(ty.body).monospace().color(color))
+    })
+    .inner
 }
 
 /// Amber → red as the value climbs, with the tint strengthening too, so both
@@ -383,27 +438,48 @@ fn heat_color(t: f32, pal: &Palette) -> Color32 {
     base.gamma_multiply(0.16 + 0.5 * t)
 }
 
-/// A column heading, optionally carrying the machine-wide total above it the
-/// way Windows does ("CPU" with "23%" over it).
-fn sort_header(
-    ui: &mut egui::Ui,
-    pal: &Palette,
-    state: &mut State,
-    label: &str,
-    total: Option<&str>,
+/// One column's heading: its label, how it sorts, whether it is numeric, and
+/// the machine-wide total shown above it the way Windows does ("CPU" with
+/// "23%" over it).
+#[derive(Clone, Copy)]
+struct Col<'a> {
+    label: &'a str,
+    total: Option<&'a str>,
     sort: Option<Sort>,
-) {
+    /// Numeric columns are right-aligned, heading included.
+    right: bool,
+}
+
+impl<'a> Col<'a> {
+    fn text(label: &'a str, sort: Option<Sort>) -> Self {
+        Self { label, total: None, sort, right: false }
+    }
+
+    fn num(label: &'a str, sort: Option<Sort>) -> Self {
+        Self { label, total: None, sort, right: true }
+    }
+
+    fn with_total(mut self, total: Option<&'a str>) -> Self {
+        self.total = total;
+        self
+    }
+}
+
+fn sort_header(ui: &mut egui::Ui, pal: &Palette, ty: &Type, state: &mut State, col: Col<'_>) {
+    let Col { label, total, sort, right } = col;
     // Vertical so the total can sit above the label; without this the header
     // is a single baseline and there is nowhere to put it. The blank line
     // keeps every heading the same height when a column has no total.
-    ui.vertical(|ui| {
+    let align = if right { egui::Align::Max } else { egui::Align::Min };
+    ui.with_layout(egui::Layout::top_down(align), |ui| {
         ui.add_space(1.0);
         ui.label(
             RichText::new(total.unwrap_or(" "))
-                .size(11.5)
+                .size(ty.total)
+                .strong()
                 .color(if total.is_some() { pal.text } else { pal.text_dim }),
         );
-        sort_label(ui, pal, state, label, sort);
+        sort_label(ui, pal, ty, state, label, sort);
     });
 }
 
@@ -411,12 +487,13 @@ fn sort_header(
 fn sort_label(
     ui: &mut egui::Ui,
     pal: &Palette,
+    ty: &Type,
     state: &mut State,
     label: &str,
     sort: Option<Sort>,
 ) {
     let Some(sort) = sort else {
-        ui.label(RichText::new(label).size(10.5).strong().color(pal.text_dim));
+        ui.label(RichText::new(label).size(ty.header).strong().color(pal.text_dim));
         return;
     };
     let active = state.sort == sort;
@@ -428,7 +505,7 @@ fn sort_label(
         " ▲"
     };
     let text = RichText::new(format!("{label}{arrow}"))
-        .size(10.5)
+        .size(ty.header)
         .strong()
         .color(if active { pal.accent } else { pal.text_dim });
     if ui.add(egui::Label::new(text).sense(egui::Sense::click())).clicked() {
@@ -444,8 +521,12 @@ fn sort_label(
     }
 }
 
-fn mono(ui: &mut egui::Ui, pal: &Palette, text: &str) {
-    ui.label(RichText::new(text).size(10.5).monospace().color(pal.value));
+/// Right-aligned so digits line up down the column; a left-aligned number
+/// column reads ragged and is the main thing that made this table look untidy.
+fn mono(ui: &mut egui::Ui, pal: &Palette, ty: &Type, text: &str) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(RichText::new(text).size(ty.body).monospace().color(pal.value));
+    });
 }
 
 /// Killing is destructive and irreversible, so it asks first.
@@ -547,7 +628,7 @@ fn fixed_scale(t: SensorType) -> Option<(f32, f32)> {
     matches!(t, SensorType::Load).then_some((0.0, 100.0))
 }
 
-fn performance_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut State) {
+fn performance_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, ty: &Type, state: &mut State) {
     let frame = s.frame();
     let categories = build_categories(&frame);
 
@@ -563,13 +644,16 @@ fn performance_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut Sta
         .frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(egui::Margin::same(4)))
         .show(ui, |ui| {
             // Sized the way main_window sizes its tree panel — this egui build
-            // has no width builder on Panel.
-            ui.set_min_width(206.0);
-            ui.set_max_width(206.0);
+            // has no width builder on Panel. Derived from the type scale: at a
+            // fixed 206 px the larger titles elided to "Virtual Mem…" and
+            // "Bluetooth Ne…", which defeats naming the devices at all.
+            let w = ty.card_h * 4.0;
+            ui.set_min_width(w);
+            ui.set_max_width(w);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for (i, cat) in categories.iter().enumerate() {
                     let selected = i == state.selected_category;
-                    if category_row(ui, s, pal, cat, selected) {
+                    if category_row(ui, s, pal, ty, cat, selected) {
                         state.selected_category = i;
                     }
                 }
@@ -586,9 +670,9 @@ fn performance_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut Sta
         .show(ui, |ui| {
             // Title left, device name right — Windows' header line.
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&cat.title).size(19.0).color(pal.text));
+                ui.label(RichText::new(&cat.title).size(ty.headline * 0.68).strong().color(pal.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(&cat.subtitle).size(11.5).color(pal.text_dim));
+                    ui.label(RichText::new(&cat.subtitle).size(ty.body).color(pal.text_dim));
                 });
             });
             ui.add_space(6.0);
@@ -606,13 +690,14 @@ fn performance_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut Sta
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(crate::format::format_value(cat.value, cat.sensor_type))
-                        .size(26.0)
+                        .size(ty.headline)
+                        .strong()
                         .color(color),
                 );
                 ui.add_space(10.0);
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     ui.add_space(8.0);
-                    ui.label(RichText::new(&cat.title).size(11.0).color(pal.text_dim));
+                    ui.label(RichText::new(&cat.title).size(ty.body).color(pal.text_dim));
                 });
             });
 
@@ -625,8 +710,10 @@ fn performance_tab(ui: &mut egui::Ui, s: &Shared, pal: &Palette, state: &mut Sta
                 .show(ui, |ui| {
                     for pair in cat.detail.chunks(2) {
                         for (k, v) in pair {
-                            ui.label(RichText::new(k).size(11.0).color(pal.text_dim));
-                            ui.label(RichText::new(v).size(11.0).monospace().color(pal.value));
+                            ui.label(RichText::new(k).size(ty.body).color(pal.text_dim));
+                            ui.label(
+                                RichText::new(v).size(ty.body).monospace().strong().color(pal.value),
+                            );
                         }
                         ui.end_row();
                     }
@@ -639,13 +726,14 @@ fn category_row(
     ui: &mut egui::Ui,
     s: &Shared,
     pal: &Palette,
+    ty: &Type,
     cat: &Category,
     selected: bool,
 ) -> bool {
     // Taller than a list row: Windows' sidebar entries are cards carrying a
     // live thumbnail of the same graph, not one-line labels.
     let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), ty.card_h), egui::Sense::click());
     let p = ui.painter_at(rect);
     let color = category_color(cat.hardware_type, pal);
 
@@ -669,11 +757,12 @@ fn category_row(
     // Device names are as long as their vendors made them ("OpenVPN Data
     // Channel Offload"), so the title is elided to the space left of the
     // thumbnail. Painting it unclipped ran it under the graph.
-    let title_w = (rect.right() - 86.0) - text_x;
+    let thumb_w = (rect.width() * 0.38).clamp(64.0, 110.0);
+    let title_w = (rect.right() - thumb_w - 14.0) - text_x;
     let galley = {
         let mut job = egui::text::LayoutJob::simple_singleline(
             cat.title.clone(),
-            FontId::proportional(12.0),
+            FontId::proportional(ty.title),
             if selected { pal.text } else { pal.text_dim },
         );
         job.wrap.max_width = title_w.max(24.0);
@@ -690,13 +779,15 @@ fn category_row(
         Pos2::new(text_x, rect.bottom() - 8.0),
         Align2::LEFT_BOTTOM,
         crate::format::format_value(cat.value, cat.sensor_type),
-        FontId::proportional(12.5),
+        // The reading is what the sidebar is scanned for, so it is the
+        // heaviest thing on the card.
+        FontId::new(ty.value, egui::FontFamily::Proportional),
         color,
     );
 
     // Thumbnail graph on the right, filled like the big one.
     let thumb = egui::Rect::from_min_max(
-        Pos2::new(rect.right() - 80.0, rect.top() + 8.0),
+        Pos2::new(rect.right() - thumb_w - 8.0, rect.top() + 8.0),
         Pos2::new(rect.right() - 8.0, rect.bottom() - 8.0),
     );
     p.rect_filled(thumb, 1.0, pal.bg.gamma_multiply(0.6));
