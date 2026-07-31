@@ -2,10 +2,11 @@
 //! OS / Drives panel grid with the ISA features chip-grid and an Operating
 //! Point table fed by live sensors.
 
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Color32, RichText};
 
 use super::widgets::{chip, info_row, panel};
 use super::{Palette, Shared};
+use crate::model::storage::{HealthStatus, StorageHealth, StorageProtocol};
 use crate::model::{Hardware, HardwareType, SensorType};
 
 pub fn show(ui: &mut egui::Ui, s: &Shared) {
@@ -34,7 +35,7 @@ pub fn show(ui: &mut egui::Ui, s: &Shared) {
                     // ---- Motherboard + Memory ------------------------------
                     board_memory_panels(&mut cols[1], &i, &pal);
                     // ---- GPU + OS + Drives ---------------------------------
-                    gpu_os_drives_panels(&mut cols[2], &i, tree, &pal);
+                    gpu_os_drives_panels(&mut cols[2], &i, tree, frame.storage(), &pal);
                 });
             });
         });
@@ -245,7 +246,13 @@ fn board_memory_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, pal: &
     });
 }
 
-fn gpu_os_drives_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree: &[Hardware], pal: &Palette) {
+fn gpu_os_drives_panels(
+    ui: &mut egui::Ui,
+    i: &crate::sysinfo::SystemInfo,
+    tree: &[Hardware],
+    frame_storage: &[StorageHealth],
+    pal: &Palette,
+) {
     panel(ui, "GPU", pal, |ui| {
         for (gi, g) in i.gpus.iter().enumerate() {
             let vendor = if g.name.to_uppercase().contains("NVIDIA") {
@@ -313,19 +320,201 @@ fn gpu_os_drives_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree:
     ui.add_space(6.0);
 
     panel(ui, "Drives", pal, |ui| {
+        // Health, where a backend could read it. Falls back to the plain
+        // WMI/inventory listing for drives S.M.A.R.T. could not be read from,
+        // so a machine with one unreadable disk still lists all of them.
+        let health = frame_storage;
         for d in &i.drives {
+            let matched = health.iter().find(|h| {
+                // Model strings differ in padding and case between WMI and the
+                // drive's own identity response, so compare loosely.
+                let a = h.model.to_lowercase();
+                let b = d.model.to_lowercase();
+                !a.is_empty() && (a.contains(b.trim()) || b.contains(a.trim()))
+            });
+            match matched {
+                Some(h) => drive_health_block(ui, h, pal),
+                None => {
+                    ui.label(
+                        RichText::new(format!(
+                            "• {} [{}] {}",
+                            d.model,
+                            d.interface,
+                            d.size_gb.map(|g| format!("{g:.0} GB")).unwrap_or_default()
+                        ))
+                        .color(pal.text)
+                        .size(10.5),
+                    );
+                }
+            }
+        }
+
+        // Drives the sensor backend saw but WMI did not enumerate.
+        for h in health {
+            let known = i.drives.iter().any(|d| {
+                let a = h.model.to_lowercase();
+                let b = d.model.to_lowercase();
+                !a.is_empty() && (a.contains(b.trim()) || b.contains(a.trim()))
+            });
+            if !known {
+                drive_health_block(ui, h, pal);
+            }
+        }
+
+        if i.drives.is_empty() && health.is_empty() {
             ui.label(
-                RichText::new(format!(
-                    "• {} [{}] {}",
-                    d.model,
-                    d.interface,
-                    d.size_gb.map(|g| format!("{g:.0} GB")).unwrap_or_default()
-                ))
-                .color(pal.text)
-                .size(10.5),
+                RichText::new("No drives enumerated — S.M.A.R.T. needs administrator rights")
+                    .color(pal.text_dim)
+                    .size(10.5),
             );
         }
     });
+}
+
+/// One drive: identity, the health headline, and its S.M.A.R.T. table.
+fn drive_health_block(ui: &mut egui::Ui, h: &StorageHealth, pal: &Palette) {
+    let (label, color) = match h.status {
+        HealthStatus::Good => ("Good", pal.ok_badge),
+        HealthStatus::Caution => ("Caution", pal.warn),
+        HealthStatus::Bad => ("Bad", pal.crit),
+        // Never "Good" by default: not being able to read a drive's health is
+        // a different fact from the drive being healthy.
+        HealthStatus::Unknown => ("Unknown", pal.text_dim),
+    };
+
+    egui::Frame::new()
+        .fill(pal.bg_header)
+        .corner_radius(3)
+        .inner_margin(egui::Margin::same(6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&h.model).color(pal.text).size(11.5).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::Frame::new()
+                        .fill(color)
+                        .corner_radius(2)
+                        .inner_margin(egui::Margin::symmetric(6, 1))
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(label).color(Color32::WHITE).size(10.0).strong());
+                        });
+                });
+            });
+
+            let proto = match h.protocol {
+                StorageProtocol::Nvme => "NVMe",
+                StorageProtocol::Ata => "SATA / ATA",
+                StorageProtocol::Scsi => "SCSI",
+            };
+            info_row(ui, "Interface:", proto, pal);
+            info_row(
+                ui,
+                "Capacity:",
+                &h.capacity_bytes
+                    .map(|b| format!("{:.0} GB", b as f64 / 1e9))
+                    .unwrap_or_default(),
+                pal,
+            );
+            info_row(ui, "Firmware:", &h.firmware, pal);
+            info_row(ui, "Serial:", &h.serial, pal);
+            info_row(
+                ui,
+                "Temperature:",
+                &h.temperature_c.map(|t| format!("{t:.0} °C")).unwrap_or_default(),
+                pal,
+            );
+            info_row(
+                ui,
+                "Power-On Hours:",
+                &h.power_on_hours
+                    .map(|v| format!("{v} h  ({:.1} y)", v as f64 / 8760.0))
+                    .unwrap_or_default(),
+                pal,
+            );
+            info_row(
+                ui,
+                "Power Cycles:",
+                &h.power_cycles.map(|v| v.to_string()).unwrap_or_default(),
+                pal,
+            );
+            info_row(
+                ui,
+                "Health / Life:",
+                &h.life_remaining_pct
+                    .map(|v| format!("{v:.0} %"))
+                    .unwrap_or_default(),
+                pal,
+            );
+            info_row(ui, "Host Writes:", &tb(h.total_bytes_written), pal);
+            info_row(ui, "Host Reads:", &tb(h.total_bytes_read), pal);
+
+            for w in &h.warnings {
+                ui.label(RichText::new(format!("⚠ {w}")).color(pal.warn).size(10.0));
+            }
+
+            if !h.attributes.is_empty() {
+                // Collapsed by default: the attribute table is long, and the
+                // headline above is what most people came for.
+                egui::CollapsingHeader::new(
+                    RichText::new(format!("S.M.A.R.T. attributes ({})", h.attributes.len()))
+                        .size(10.5)
+                        .color(pal.text_dim),
+                )
+                .id_salt(&h.identifier)
+                .show(ui, |ui| smart_table(ui, h, pal));
+            }
+        });
+    ui.add_space(4.0);
+}
+
+/// The attribute table, in the column order every S.M.A.R.T. tool uses.
+fn smart_table(ui: &mut egui::Ui, h: &StorageHealth, pal: &Palette) {
+    egui::Grid::new(format!("smart_{}", h.identifier))
+        .num_columns(6)
+        .spacing([10.0, 2.0])
+        .striped(true)
+        .show(ui, |ui| {
+            for (t, w) in [
+                ("ID", 26.0),
+                ("Attribute", 150.0),
+                ("Cur", 26.0),
+                ("Wst", 26.0),
+                ("Thr", 26.0),
+                ("Raw", 60.0),
+            ] {
+                ui.scope(|ui| {
+                    ui.set_min_width(w);
+                    ui.label(RichText::new(t).size(9.5).strong().color(pal.text_dim));
+                });
+            }
+            ui.end_row();
+
+            for a in &h.attributes {
+                // A failing attribute is the single most important thing on
+                // this screen, so the whole row takes the critical colour.
+                let c = if a.failing() { pal.crit } else { pal.value };
+                ui.label(RichText::new(format!("{:02X}", a.id)).size(9.5).monospace().color(pal.text_dim));
+                ui.label(RichText::new(&a.name).size(9.5).color(if a.failing() { pal.crit } else { pal.text }));
+                ui.label(RichText::new(a.current.to_string()).size(9.5).monospace().color(c));
+                ui.label(RichText::new(a.worst.to_string()).size(9.5).monospace().color(c));
+                ui.label(
+                    RichText::new(if a.threshold == 0 { "—".into() } else { a.threshold.to_string() })
+                        .size(9.5)
+                        .monospace()
+                        .color(pal.text_dim),
+                );
+                ui.label(RichText::new(a.raw.to_string()).size(9.5).monospace().color(c));
+                ui.end_row();
+            }
+        });
+}
+
+/// Bytes as TB/GB. `None` stays an em dash — an unread counter is not zero.
+fn tb(v: Option<u128>) -> String {
+    match v {
+        None => String::new(),
+        Some(b) if b >= 1_000_000_000_000 => format!("{:.2} TB", b as f64 / 1e12),
+        Some(b) => format!("{:.0} GB", b as f64 / 1e9),
+    }
 }
 
 // ---- live-sensor helpers ------------------------------------------------

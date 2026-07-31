@@ -65,6 +65,15 @@ pub struct TelemetryFrame {
     pub inventory: Arc<Inventory>,
     /// Sensor-engine and kernel-driver status.
     pub diagnostics: Diagnostics,
+    /// Per-drive S.M.A.R.T. health from the *sensor* backend.
+    ///
+    /// Carried beside `inventory` rather than merged into it because the two
+    /// arrive from different places: macOS fills `inventory.storage` from its
+    /// own slow-lane backend, while on Windows the health comes from the sensor
+    /// sidecar, which the inventory backend cannot reach. Merging would mean
+    /// rebuilding the `Arc<Inventory>` — and cloning its hex blobs — every
+    /// tick. Read both through [`TelemetryFrame::storage`].
+    pub sensor_storage: Vec<crate::model::storage::StorageHealth>,
     /// Name of the active sensor backend.
     pub source: String,
 }
@@ -77,12 +86,25 @@ impl Default for TelemetryFrame {
             tree: Vec::new(),
             inventory: Arc::new(Inventory::default()),
             diagnostics: Diagnostics::default(),
+            sensor_storage: Vec::new(),
             source: String::new(),
         }
     }
 }
 
 impl TelemetryFrame {
+    /// Drive health, from whichever lane produced it on this platform.
+    ///
+    /// One accessor so callers never have to know that macOS fills the slow
+    /// lane and Windows the sensor backend.
+    pub fn storage(&self) -> &[crate::model::storage::StorageHealth] {
+        if self.sensor_storage.is_empty() {
+            &self.inventory.storage
+        } else {
+            &self.sensor_storage
+        }
+    }
+
     /// Total sensor count across the tree, including sub-hardware.
     pub fn sensor_count(&self) -> usize {
         fn walk(hw: &[Hardware]) -> usize {

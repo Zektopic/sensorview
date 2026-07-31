@@ -48,6 +48,17 @@ pub trait SensorSource: Send {
     fn diagnostics(&self) -> Diagnostics {
         Diagnostics::default()
     }
+
+    /// Per-drive S.M.A.R.T. / health (default: none).
+    ///
+    /// Read every tick like [`Self::diagnostics`], but backends must return a
+    /// *cached* value rather than querying the drive here: re-reading
+    /// S.M.A.R.T. at sensor cadence keeps disks out of low-power states and
+    /// burns a limited log-read budget. Refreshing it on a slow cadence is the
+    /// backend's job.
+    fn storage_health(&self) -> Vec<crate::model::storage::StorageHealth> {
+        Vec::new()
+    }
 }
 
 /// Pick the best available source for the current build/platform.

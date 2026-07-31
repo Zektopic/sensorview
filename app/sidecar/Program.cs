@@ -77,6 +77,14 @@ if (int.TryParse(parentId, out var pid))
     try { parent = System.Diagnostics.Process.GetProcessById(pid); } catch { }
 }
 
+// S.M.A.R.T. is emitted on its own slow cadence, not with every tick.
+// Re-reading drive health at 1 Hz keeps disks out of low-power states and
+// burns a limited log-read budget, which is the same reason SensorView keeps
+// a separate "slow lane" (see src/inventory.rs). 0 forces the first pass to
+// happen immediately so the UI is not blank for the first half-minute.
+const int StorageEveryTicks = 30;
+var tick = 0;
+
 while (true)
 {
     if (parent is { HasExited: true })
@@ -88,6 +96,20 @@ while (true)
     try
     {
         writer.WriteLine(JsonSerializer.Serialize(tree, json));
+
+        if (tick % StorageEveryTicks == 0)
+        {
+            // Its own line, tagged, so the reader can tell it from a tree
+            // snapshot without inspecting the shape.
+            var storage = CollectStorage(computer);
+            if (storage.Count > 0)
+            {
+                writer.WriteLine(JsonSerializer.Serialize(
+                    new Dictionary<string, object?> { ["storage"] = storage }, json));
+            }
+        }
+        tick++;
+
         writer.Flush(); // throws if the parent closed the read end of the pipe
     }
     catch (IOException)
@@ -132,6 +154,98 @@ static string ExtractRing0(string report)
     }
     var text = string.Join("\n", kept).Trim();
     return text.Length == 0 ? "(no ring0 section in report)" : text;
+}
+
+/// <summary>
+/// Per-drive identity and S.M.A.R.T. health, in the shape of the Rust
+/// <c>model::storage::StorageHealth</c>.
+///
+/// Everything here comes from LibreHardwareMonitor's public surface:
+/// <c>StorageDevice.Storage</c> (a DiskInfoToolkit <c>Storage</c>, carrying
+/// identity and the decoded health summary) and <c>StorageDevice.Attributes</c>
+/// (the raw attribute table). No reflection and no extra device handles — LHM
+/// has already opened the drives.
+///
+/// Requires administrator rights: unelevated, LHM cannot open
+/// <c>\\.\PhysicalDriveN</c> and enumerates no storage at all, so this returns
+/// an empty list rather than partial data.
+/// </summary>
+static List<Dictionary<string, object?>> CollectStorage(Computer computer)
+{
+    var drives = new List<Dictionary<string, object?>>();
+
+    foreach (var hw in computer.Hardware)
+    {
+        if (hw is not LibreHardwareMonitor.Hardware.Storage.StorageDevice dev)
+        {
+            continue;
+        }
+
+        try
+        {
+            var st = dev.Storage;
+            var smart = st?.Smart;
+
+            // The attribute table, with the vendor-decoded name where LHM has
+            // one. `RawValueULong` is the 48-bit raw field the value actually
+            // means; CurrentValue/WorstValue/Threshold are the normalised 0-255
+            // triple every S.M.A.R.T. tool shows beside it.
+            var attributes = new List<Dictionary<string, object?>>();
+            foreach (var a in dev.Attributes)
+            {
+                var raw = a.Attribute?.Attribute;
+                if (raw is null)
+                {
+                    continue;
+                }
+                attributes.Add(new Dictionary<string, object?>
+                {
+                    ["id"] = raw.Value.ID,
+                    ["name"] = a.Attribute?.Info?.Name ?? a.Name ?? $"Attribute {raw.Value.ID}",
+                    ["current"] = raw.Value.CurrentValue,
+                    ["worst"] = raw.Value.WorstValue,
+                    ["threshold"] = raw.Value.Threshold,
+                    ["raw"] = raw.Value.RawValueULong,
+                });
+            }
+
+            drives.Add(new Dictionary<string, object?>
+            {
+                ["identifier"] = hw.Identifier.ToString(),
+                ["model"] = st?.Model ?? hw.Name ?? "",
+                ["serial"] = st?.SerialNumber ?? "",
+                ["firmware"] = st?.FirmwareRev ?? st?.Firmware ?? "",
+                // The Rust side keys presentation off this, so send what the
+                // bus actually reports rather than guessing from the model name.
+                ["protocol"] = st?.IsNVMe == true ? "Nvme" : "Ata",
+                ["is_ssd"] = st?.IsSSD,
+                ["bus"] = st?.BusType.ToString(),
+                ["capacity_bytes"] = st?.TotalSize,
+                ["free_bytes"] = st?.TotalFreeSize,
+                ["temperature_c"] = smart?.Temperature,
+                // LHM exposes both a measured and a detected figure; the
+                // measured one is the drive's own counter where it has one.
+                ["power_on_hours"] = smart?.MeasuredPowerOnHours > 0
+                    ? smart?.MeasuredPowerOnHours
+                    : smart?.DetectedPowerOnHours,
+                ["power_cycles"] = smart?.PowerOnCount,
+                ["life_remaining_pct"] = smart?.Life,
+                ["host_reads_gb"] = smart?.HostReads,
+                ["host_writes_gb"] = smart?.HostWrites,
+                ["nand_writes_gb"] = smart?.NandWrites,
+                ["status"] = smart?.DiskStatus.ToString(),
+                ["attributes"] = attributes,
+            });
+        }
+        catch (Exception ex)
+        {
+            // One unreadable drive must not cost us the others, and must not
+            // take down the sidecar — the app would lose every sensor.
+            Console.Error.WriteLine($"storage skipped for {hw.Name}: {ex.Message}");
+        }
+    }
+
+    return drives;
 }
 
 static Dictionary<string, object?> MapHardware(IHardware hw)

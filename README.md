@@ -65,6 +65,22 @@ controller — the field renders `—` rather than a plausible-looking guess.
 
 ## Features
 
+### Drive health (S.M.A.R.T.)
+
+The System Summary's **Drives** panel reports each drive's identity, interface,
+firmware, temperature, power-on hours, power cycles, remaining endurance and
+host bytes read/written, with the full S.M.A.R.T. attribute table — id, name,
+current, worst, threshold and raw — behind a disclosure.
+
+The verdict is computed here rather than taken from the backend, so a
+non-`Good` drive always says *why*: an attribute at or below its threshold is
+`Bad`; reallocated or pending sectors, or ≤ 10 % endurance left, are `Caution`.
+A drive whose health cannot be read is reported `Unknown`, never `Good` —
+"we cannot see" and "healthy" are different facts.
+
+On Windows this needs administrator rights: unelevated, the sensor backend
+cannot open `\\.\PhysicalDrive*` and enumerates no drives at all.
+
 ### Sensor monitoring
 - Dense, sortable **Sensors Status** table with current / min / max / average
   columns, per-type icons, draggable column widths and font zoom

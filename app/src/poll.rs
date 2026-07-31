@@ -173,6 +173,9 @@ fn run(
             // Lock-free read of whatever the slow lane last produced.
             inventory: inventory.latest(),
             diagnostics: monitor.diagnostics(),
+            // Cached in the backend and refreshed on its own slow cadence, so
+            // this is a small clone rather than a drive read.
+            sensor_storage: monitor.storage_health(),
             source: monitor.source_name().to_string(),
         };
         // CSV logging runs here rather than in the UI so a slow disk stalls
@@ -266,6 +269,10 @@ impl Monitor {
 
     pub fn diagnostics(&self) -> crate::source::Diagnostics {
         self.source.diagnostics()
+    }
+
+    pub fn storage_health(&self) -> Vec<crate::model::storage::StorageHealth> {
+        self.source.storage_health()
     }
 
     /// Poll the source once and fold the readings into the running statistics.
