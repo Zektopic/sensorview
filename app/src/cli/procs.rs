@@ -17,6 +17,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(8);
 pub enum SortKey {
     Cpu,
     Mem,
+    Disk,
     Pid,
     Name,
 }
@@ -26,6 +27,7 @@ impl From<SortKey> for Sort {
         match k {
             SortKey::Cpu => Sort::Cpu,
             SortKey::Mem => Sort::Memory,
+            SortKey::Disk => Sort::Disk,
             SortKey::Pid => Sort::Pid,
             SortKey::Name => Sort::Name,
         }
@@ -82,8 +84,8 @@ pub fn run(
 pub fn render_table(rows: &[ProcessRow], cpu_count: usize) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "{:>7}  {:>6}  {:<12}  {:>9}  {:>9}  {}\n",
-        "PID", "CPU%", "USER", "MEM", "VIRT", "NAME"
+        "{:>7}  {:>6}  {:<12}  {:>9}  {:>9}  {:>10}  {}\n",
+        "PID", "CPU%", "USER", "MEM", "VIRT", "DISK", "NAME"
     ));
 
     for r in rows {
@@ -93,12 +95,13 @@ pub fn render_table(rows: &[ProcessRow], cpu_count: usize) -> String {
             Some(v) => format!("{v:.1}"),
         };
         out.push_str(&format!(
-            "{:>7}  {:>6}  {:<12}  {:>9}  {:>9}  {}\n",
+            "{:>7}  {:>6}  {:<12}  {:>9}  {:>9}  {:>10}  {}\n",
             r.pid,
             cpu,
             truncate(r.user.as_deref().unwrap_or("—"), 12),
             procs::format_bytes(r.mem_bytes),
             procs::format_bytes(r.virt_bytes),
+            procs::format_rate(r.disk_bps),
             r.name,
         ));
     }
@@ -168,6 +171,30 @@ mod tests {
         assert!(out.contains("800%"), "{out}");
     }
 
+    /// The disk column belongs to the headless build too, not just the GUI.
+    ///
+    /// This is load-bearing beyond cosmetics: when `Sort::Disk` and
+    /// `format_rate` were reachable only from the Task Manager window, a
+    /// `--no-default-features` build saw them as dead code and CI failed on
+    /// `-D warnings` for every GUI-less feature combination. Exercising them
+    /// from the CLI is what keeps that honest, so this test failing is the
+    /// signal that the headless build is about to break again.
+    #[test]
+    fn disk_rate_appears_in_the_table_and_distinguishes_idle_from_unknown() {
+        let mut busy = row(1, "writer", Some(1.0), Some("me"));
+        busy.disk_bps = Some(3.0 * 1024.0 * 1024.0);
+        let mut idle = row(2, "quiet", Some(1.0), Some("me"));
+        idle.disk_bps = Some(0.0);
+        // `unknown` keeps disk_bps: None from the fixture.
+        let unknown = row(3, "cold", Some(1.0), Some("me"));
+
+        let out = render_table(&[busy, idle, unknown], 8);
+        assert!(out.contains("DISK"), "header must carry the column:\n{out}");
+        assert!(out.contains("3.0 MB/s"), "{out}");
+        assert!(out.contains("0 MB/s"), "measured idle should read as zero:\n{out}");
+        assert!(out.contains('—'), "an unread rate must stay unknown:\n{out}");
+    }
+
     #[test]
     fn empty_result_says_so_rather_than_printing_a_bare_header() {
         let out = render_table(&[], 8);
@@ -190,6 +217,7 @@ mod tests {
     fn sort_key_maps_onto_the_collector_ordering() {
         assert_eq!(Sort::from(SortKey::Cpu), Sort::Cpu);
         assert_eq!(Sort::from(SortKey::Mem), Sort::Memory);
+        assert_eq!(Sort::from(SortKey::Disk), Sort::Disk);
         assert_eq!(Sort::from(SortKey::Pid), Sort::Pid);
         assert_eq!(Sort::from(SortKey::Name), Sort::Name);
     }

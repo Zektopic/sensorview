@@ -161,7 +161,7 @@ sensorview report                      # the GUI's text report, from the CLI
 
 # Processes — the Task Manager's data, without the window
 sensorview ps                          # busiest first
-sensorview ps --sort mem --limit 10    # sort by cpu | mem | pid | name
+sensorview ps --sort mem --limit 10    # sort by cpu | mem | disk | pid | name
 sensorview ps --filter chrome --json   # pipe into jq
 sensorview kill 4711                   # SIGTERM; --force sends SIGKILL
 
