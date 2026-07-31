@@ -108,7 +108,7 @@ pub fn render_table(rows: &[ProcessRow], cpu_count: usize) -> String {
     } else if cpu_count > 0 {
         // Without this, "800%" in the CPU column looks like a bug.
         out.push_str(&format!(
-            "\n{} processes · CPU% is per-core-summed ({} cores, so {}% = all cores busy)\n",
+            "\n{} processes · CPU% is per-thread-summed ({} logical CPUs, so {}% = fully busy)\n",
             rows.len(),
             cpu_count,
             cpu_count * 100
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn footer_explains_per_core_summed_percentages() {
         let out = render_table(&[row(1, "busy", Some(800.0), Some("me"))], 8);
-        assert!(out.contains("8 cores"), "{out}");
+        assert!(out.contains("8 logical CPUs"), "{out}");
         assert!(out.contains("800%"), "{out}");
     }
 

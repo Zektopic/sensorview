@@ -127,18 +127,36 @@ impl Drop for ProcessCollector {
 }
 
 fn collect_loop(sink: &ArcSwap<ProcessSnapshot>, running: &AtomicBool) {
-    use ::sysinfo::{ProcessesToUpdate, System, Users};
+    use ::sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 
     let mut sys = System::new();
     // Refreshed rarely on purpose: the passwd database does not change at 1 Hz
     // and rebuilding it every tick is pure waste.
     let mut users = Users::new_with_refreshed_list();
-    let cpu_count = System::physical_core_count().unwrap_or(0);
+
+    // Logical CPUs, not physical cores. `cpu_usage()` is per-thread, so on a
+    // 4-core/8-thread machine one process can legitimately report 800 %;
+    // labelling that against 4 cores would tell the user it is impossible.
+    let cpu_count = std::thread::available_parallelism().map_or(0, |n| n.get());
+
+    // What to refresh, spelled out. `UpdateKind` defaults to `Never`, so the
+    // plain `refresh_processes` left user IDs unset — which happened to work on
+    // macOS, where the uid comes free with the kernel struct, and left every
+    // owner blank on Linux. Identity fields use `OnlyIfNotSet` because a
+    // process's user and command line do not change; cpu/memory/disk are
+    // re-read every tick because that is the whole point.
+    let what = ProcessRefreshKind::nothing()
+        .with_cpu()
+        .with_memory()
+        .with_disk_usage()
+        .with_user(UpdateKind::OnlyIfNotSet)
+        .with_cmd(UpdateKind::OnlyIfNotSet);
+
     let mut seq: u64 = 0;
 
     while running.load(Ordering::Relaxed) {
-        // `true` also refreshes disk usage and user ids, not just liveness.
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+        // `true` removes processes that have exited since the last refresh.
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, what);
         seq += 1;
 
         // Occasionally, in case a user appeared mid-session.
