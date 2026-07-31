@@ -73,7 +73,6 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - **Hex Viewer** for raw firmware blobs (ACPI/SMBIOS on Windows and Linux)
 - Configurable poll interval, min/max reset, light/dark/grey themes
 
-### Task Manager
 - **Processes** — PID, name, owner, CPU %, memory, virtual size, disk
   read/write and uptime; sortable columns, a filter box, and end/force-kill
   behind a confirmation. Rows are virtualised, so a 700-process list scrolls
@@ -263,7 +262,12 @@ cargo run --release
 Platform prerequisites:
 
 ```bash
-# Windows — also build the sensor sidecar (needs .NET 8 SDK)
+# Windows — MSVC Build Tools are required, not optional: the default feature set
+# includes `push`, which pulls in rustls → ring, and ring compiles C and assembly.
+# Build from a developer prompt (vcvars64.bat) so cl.exe and the Windows SDK are
+# on PATH. Without a C toolchain, use --no-default-features --features gui,web,tui.
+#
+# Also build the sensor sidecar (needs .NET 8 SDK):
 dotnet publish sidecar -c Release -o sidecar/publish
 
 # Linux
