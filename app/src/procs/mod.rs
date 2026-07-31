@@ -20,10 +20,11 @@
 //! `crate::sysinfo` module (static machine facts). Inside this module the crate
 //! is always spelled `::sysinfo` so which one is meant is never ambiguous.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 
@@ -57,6 +58,10 @@ pub struct ProcessRow {
     /// "not permitted to look" — see the note in `build_snapshot`.
     pub disk_read_bytes: u64,
     pub disk_write_bytes: u64,
+    /// Combined read+write bytes per second. `None` until a baseline exists:
+    /// the underlying counters are cumulative, so a rate needs two samples —
+    /// exactly the constraint `cpu_pct` has, and reported the same way.
+    pub disk_bps: Option<f64>,
     pub run_time_s: u64,
 }
 
@@ -187,33 +192,55 @@ fn collect_loop(sink: &ArcSwap<ProcessSnapshot>, running: &AtomicBool) {
 
     let mut seq: u64 = 0;
 
+    // Last tick's cumulative I/O counters, for turning them into a rate.
+    // Measured against the wall clock actually elapsed rather than
+    // REFRESH_INTERVAL, because a refresh over several hundred processes can
+    // take a sizeable fraction of the interval — assuming the nominal period
+    // would overstate every rate on a slow machine.
+    let mut prev_io: HashMap<u32, (u64, u64)> = HashMap::new();
+    let mut last_tick = Instant::now();
+
     while running.load(Ordering::Relaxed) {
         // `true` removes processes that have exited since the last refresh.
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, what);
         seq += 1;
+
+        let now = Instant::now();
+        let dt_s = now.duration_since(last_tick).as_secs_f64();
+        last_tick = now;
 
         // Occasionally, in case a user appeared mid-session.
         if seq.is_multiple_of(60) {
             users = Users::new_with_refreshed_list();
         }
 
-        sink.store(Arc::new(build_snapshot(&sys, &users, seq, cpu_count)));
+        let (snapshot, next_io) =
+            build_snapshot(&sys, &users, seq, cpu_count, &prev_io, dt_s);
+        prev_io = next_io;
+        sink.store(Arc::new(snapshot));
 
         // Sliced so stopping doesn't wait out a full interval.
         sleep_interruptible(running, REFRESH_INTERVAL);
     }
 }
 
+/// Build a snapshot, and return the I/O counters to difference against next
+/// tick.
 fn build_snapshot(
     sys: &::sysinfo::System,
     users: &::sysinfo::Users,
     seq: u64,
     cpu_count: usize,
-) -> ProcessSnapshot {
+    prev_io: &HashMap<u32, (u64, u64)>,
+    dt_s: f64,
+) -> (ProcessSnapshot, HashMap<u32, (u64, u64)>) {
     // CPU percentages are meaningless until sysinfo has two samples to
     // difference, so the first snapshot reports them absent rather than 0.
     let cpu_ready = seq >= 2;
+    // Same rule for I/O rates, plus a positive interval to divide by.
+    let io_ready = cpu_ready && dt_s > 0.0;
     let mut total_cpu_pct = 0.0f32;
+    let mut next_io = HashMap::with_capacity(sys.processes().len());
 
     let rows: Vec<ProcessRow> = sys
         .processes()
@@ -229,8 +256,23 @@ fn build_snapshot(
             // the more common case, so 0 is reported as 0 and the caveat is
             // documented rather than guessed at.
             let disk = p.disk_usage();
+            let pid_u32 = pid.as_u32();
+            let cumulative = (disk.total_read_bytes, disk.total_written_bytes);
+            // `saturating_sub` because pids are recycled: a new process
+            // inheriting a dead one's pid starts its counters at zero, and an
+            // unsigned wrap would report an absurd rate rather than none.
+            let disk_bps = io_ready.then(|| {
+                prev_io.get(&pid_u32).map(|(pr, pw)| {
+                    let moved = cumulative.0.saturating_sub(*pr)
+                        + cumulative.1.saturating_sub(*pw);
+                    moved as f64 / dt_s
+                })
+            })
+            .flatten();
+            next_io.insert(pid_u32, cumulative);
+
             ProcessRow {
-                pid: pid.as_u32(),
+                pid: pid_u32,
                 parent: p.parent().map(|p| p.as_u32()),
                 name: p.name().to_string_lossy().into_owned(),
                 cmd: p
@@ -246,14 +288,15 @@ fn build_snapshot(
                 cpu_pct: cpu_ready.then_some(cpu),
                 mem_bytes: p.memory(),
                 virt_bytes: p.virtual_memory(),
-                disk_read_bytes: disk.total_read_bytes,
-                disk_write_bytes: disk.total_written_bytes,
+                disk_read_bytes: cumulative.0,
+                disk_write_bytes: cumulative.1,
+                disk_bps,
                 run_time_s: p.run_time(),
             }
         })
         .collect();
 
-    ProcessSnapshot {
+    let snapshot = ProcessSnapshot {
         seq,
         unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -262,7 +305,8 @@ fn build_snapshot(
         rows,
         total_cpu_pct,
         cpu_count,
-    }
+    };
+    (snapshot, next_io)
 }
 
 fn sleep_interruptible(running: &AtomicBool, total: Duration) {
@@ -281,6 +325,7 @@ pub enum Sort {
     #[default]
     Cpu,
     Memory,
+    Disk,
     Pid,
     Name,
 }
@@ -317,6 +362,11 @@ pub fn arrange(
                 .unwrap_or(f32::NEG_INFINITY)
                 .total_cmp(&b.cpu_pct.unwrap_or(f32::NEG_INFINITY)),
             Sort::Memory => a.mem_bytes.cmp(&b.mem_bytes),
+            // Unread I/O sorts below idle, for the same reason as CPU above.
+            Sort::Disk => a
+                .disk_bps
+                .unwrap_or(f64::NEG_INFINITY)
+                .total_cmp(&b.disk_bps.unwrap_or(f64::NEG_INFINITY)),
             Sort::Pid => a.pid.cmp(&b.pid),
             Sort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         };
@@ -356,6 +406,30 @@ pub fn kill(pid: u32, force: bool) -> Result<(), String> {
     }
 }
 
+/// Human-readable transfer rate, the way a task manager shows a Disk column.
+///
+/// `None` is "no reading yet" and prints as `—`, keeping the distinction the
+/// rest of this module makes between *unknown* and *idle*.
+///
+/// A known rate below 0.1 MB/s prints as `<0.1 MB/s`, not as `0 MB/s`: at one
+/// decimal place a process doing steady small writes would otherwise be
+/// indistinguishable from one doing nothing at all, and this column exists to
+/// tell those apart. Exactly zero still prints `0 MB/s`.
+pub fn format_rate(bps: Option<f64>) -> String {
+    match bps {
+        None => "—".to_string(),
+        Some(v) if v <= 0.0 => "0 MB/s".to_string(),
+        Some(v) => {
+            let mb = v / (1024.0 * 1024.0);
+            if mb >= 0.1 {
+                format!("{mb:.1} MB/s")
+            } else {
+                "<0.1 MB/s".to_string()
+            }
+        }
+    }
+}
+
 /// Human-readable byte size.
 pub fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;
@@ -387,6 +461,7 @@ mod tests {
             virt_bytes: mem * 4,
             disk_read_bytes: 0,
             disk_write_bytes: 0,
+            disk_bps: None,
             run_time_s: 10,
         }
     }
@@ -438,6 +513,31 @@ mod tests {
             .iter()
             .any(|r| r.pid == 2));
         assert!(arrange(&sample(), Some("nothing-here"), Sort::Pid, false).is_empty());
+    }
+
+    /// A disk rate that has no baseline yet must read as unknown, not as 0 —
+    /// the same distinction `cpu_pct` makes, and for the same reason.
+    #[test]
+    fn unread_disk_rate_sorts_last_and_prints_as_unknown() {
+        assert_eq!(format_rate(None), "—");
+        // Measured as genuinely idle.
+        assert_eq!(format_rate(Some(0.0)), "0 MB/s");
+        // Small but real: must not be flattened into "0 MB/s", which is the
+        // whole point of having the column.
+        assert_eq!(format_rate(Some(1024.0)), "<0.1 MB/s");
+        assert_eq!(format_rate(Some(5.0 * 1024.0 * 1024.0)), "5.0 MB/s");
+
+        let mut rows = sample();
+        rows[0].disk_bps = Some(4.0 * 1024.0 * 1024.0);
+        rows[1].disk_bps = Some(0.0);
+        // rows[2] keeps `None`.
+        let sorted = arrange(&rows, None, Sort::Disk, true);
+        assert_eq!(sorted[0].pid, 3, "busiest disk user must sort first");
+        assert_eq!(
+            sorted.last().unwrap().pid,
+            2,
+            "an unread rate must sort below a known-idle one"
+        );
     }
 
     #[test]
