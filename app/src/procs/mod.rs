@@ -126,6 +126,39 @@ impl Drop for ProcessCollector {
     }
 }
 
+/// Waits for a collector to reach some state, polling rather than sleeping a
+/// fixed span.
+///
+/// Tests here care about *sequence* — a snapshot exists, a CPU baseline has
+/// been established — not about wall-clock time. Sleeping
+/// `REFRESH_INTERVAL * 2` and assuming two refreshes have landed conflates the
+/// two, and it is wrong on a loaded machine: enumerating several hundred
+/// processes twice can take longer than the interval itself. That is exactly
+/// how these tests first went red on a macOS CI runner while passing on every
+/// developer machine. Polling with a generous ceiling keeps the assertion
+/// honest — a collector that never restarts still fails — while letting a slow
+/// box simply take longer.
+#[cfg(test)]
+pub(crate) fn wait_for(
+    collector: &ProcessCollector,
+    what: &str,
+    ready: impl Fn(&ProcessSnapshot) -> bool,
+) -> Arc<ProcessSnapshot> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let snap = collector.snapshot();
+        if ready(&snap) {
+            return snap;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out after 30s waiting for {what} (seq {})",
+            snap.seq
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn collect_loop(sink: &ArcSwap<ProcessSnapshot>, running: &AtomicBool) {
     use ::sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 
@@ -427,18 +460,28 @@ mod tests {
     fn collector_produces_processes_and_a_cpu_baseline() {
         let mut collector = ProcessCollector::start();
 
-        std::thread::sleep(REFRESH_INTERVAL / 2);
-        let first = collector.snapshot();
+        let first = wait_for(&collector, "the first snapshot", |s| s.seq >= 1);
         assert!(!first.rows.is_empty(), "collector produced no processes");
-        assert!(!first.has_cpu(), "seq {} should not yet claim CPU data", first.seq);
-        assert!(
-            first.rows.iter().all(|r| r.cpu_pct.is_none()),
-            "first snapshot must not report CPU percentages"
+        // The invariant that must hold of *any* snapshot: percentages appear
+        // exactly when a baseline exists, never independently of one.
+        assert_eq!(
+            first.has_cpu(),
+            first.rows.iter().any(|r| r.cpu_pct.is_some()),
+            "cpu_pct disagreed with has_cpu() at seq {}",
+            first.seq
         );
+        // Polling at 25 ms always catches seq 1, which is published for a full
+        // interval; the guard only keeps a pathological stall from failing the
+        // run spuriously.
+        if first.seq == 1 {
+            assert!(!first.has_cpu(), "seq 1 must not yet claim CPU data");
+            assert!(
+                first.rows.iter().all(|r| r.cpu_pct.is_none()),
+                "first snapshot must not report CPU percentages"
+            );
+        }
 
-        std::thread::sleep(REFRESH_INTERVAL + REFRESH_INTERVAL / 2);
-        let later = collector.snapshot();
-        assert!(later.has_cpu(), "seq {} never reached a CPU baseline", later.seq);
+        let later = wait_for(&collector, "a CPU baseline", |s| s.has_cpu());
         assert!(
             later.rows.iter().any(|r| r.cpu_pct.is_some()),
             "no process reported CPU after a baseline existed"
@@ -455,18 +498,12 @@ mod tests {
     #[test]
     fn restarting_the_collector_re_establishes_a_baseline() {
         let mut first = ProcessCollector::start();
-        std::thread::sleep(REFRESH_INTERVAL / 2);
+        wait_for(&first, "the first collector to publish", |s| s.seq >= 1);
         first.stop();
         drop(first);
 
         let mut second = ProcessCollector::start();
-        std::thread::sleep(REFRESH_INTERVAL + REFRESH_INTERVAL / 2);
-        let later = second.snapshot();
-        assert!(
-            later.has_cpu(),
-            "CPU baseline never re-established after restart (seq {})",
-            later.seq
-        );
+        let later = wait_for(&second, "a CPU baseline after restart", |s| s.has_cpu());
         assert!(!later.rows.is_empty());
         second.stop();
     }

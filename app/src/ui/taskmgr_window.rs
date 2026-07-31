@@ -869,15 +869,28 @@ mod tests {
     fn ensure_collector_is_idempotent() {
         let slot = Mutex::new(None);
         ensure_collector(&slot);
-        let first = slot.lock().unwrap().as_ref().unwrap().snapshot().seq;
+
+        // Wait for a published snapshot first: comparing two seq values is only
+        // meaningful once the collector has produced one, and on a slow machine
+        // an immediate read returns the empty seq-0 placeholder either way.
+        let first = {
+            let guard = slot.lock().unwrap();
+            crate::procs::wait_for(guard.as_ref().unwrap(), "the first snapshot", |s| s.seq >= 1)
+                .seq
+        };
+
         for _ in 0..5 {
             ensure_collector(&slot);
         }
         assert!(slot.lock().unwrap().is_some());
-        // Same collector, not a replacement: seq only ever moves forward.
-        std::thread::sleep(crate::procs::REFRESH_INTERVAL / 2);
+
+        // Same collector, not a replacement: a fresh one would restart at 0,
+        // so seq must only ever move forward.
         let later = slot.lock().unwrap().as_ref().unwrap().snapshot().seq;
-        assert!(later >= first, "repeated ensure_collector replaced the collector");
+        assert!(
+            later >= first,
+            "repeated ensure_collector replaced the collector ({first} -> {later})"
+        );
         stop_collector(&slot);
     }
 
@@ -889,21 +902,26 @@ mod tests {
         let slot = Mutex::new(None);
 
         ensure_collector(&slot);
-        std::thread::sleep(crate::procs::REFRESH_INTERVAL / 2);
-        assert!(!slot.lock().unwrap().as_ref().unwrap().snapshot().rows.is_empty());
+        {
+            let guard = slot.lock().unwrap();
+            let snap = crate::procs::wait_for(guard.as_ref().unwrap(), "the first snapshot", |s| {
+                s.seq >= 1
+            });
+            assert!(!snap.rows.is_empty(), "collector produced no processes");
+        }
 
         stop_collector(&slot);
         assert!(slot.lock().unwrap().is_none(), "closing must drop the collector");
 
         ensure_collector(&slot);
-        std::thread::sleep(crate::procs::REFRESH_INTERVAL * 2);
-        let snap = slot.lock().unwrap().as_ref().unwrap().snapshot();
-        assert!(!snap.rows.is_empty(), "reopened collector produced nothing");
-        assert!(
-            snap.has_cpu(),
-            "reopened collector never re-established a CPU baseline (seq {})",
-            snap.seq
+        let guard = slot.lock().unwrap();
+        let snap = crate::procs::wait_for(
+            guard.as_ref().unwrap(),
+            "a CPU baseline after reopening",
+            |s| s.has_cpu(),
         );
+        assert!(!snap.rows.is_empty(), "reopened collector produced nothing");
+        drop(guard);
         stop_collector(&slot);
     }
 
