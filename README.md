@@ -73,6 +73,15 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - **Hex Viewer** for raw firmware blobs (ACPI/SMBIOS on Windows and Linux)
 - Configurable poll interval, min/max reset, light/dark/grey themes
 
+### Task Manager
+- **Processes** — PID, CPU %, memory, owner; sortable, filterable, with
+  end/force-kill behind a confirmation
+- **Performance** — Mission Center-style sidebar (CPU, GPU, Memory, Disk *n*,
+  Network *n*) with sparklines, a large graph and a stats grid
+- The process collector runs **only while the window is open** — enumerating
+  every process is not free, and a monitor that costs CPU when nobody is
+  looking at it is a bug
+
 ### Command line
 - **One-shot queries** — `sensors`, `get`, `info`, `report`; JSON or text; real
   exit codes, so `sensorview get … || alert` works
@@ -127,6 +136,10 @@ sensorview sensors --json | jq '.[]'   # flat JSON array, one object per sensor
 
 sensorview get "CPU Package Power"     # -> CPU Package Power: 21.5 W
 sensorview get "PMU tdie6" --raw       # -> 38.77   (bare number, for scripts)
+
+sensorview ps                          # processes, busiest first
+sensorview ps --sort mem -n 10 --json  # pipe into jq
+sensorview kill <pid> [--force]
 sensorview get "no such sensor"        # exit code 1
 
 sensorview info                        # System Summary as text
@@ -175,20 +188,25 @@ every combination that ships.
 |---|---|---|---|
 | Backend | LibreHardwareMonitor sidecar | native IOKit | native sysfs / procfs |
 | Temperatures | ✅ | ✅ | ✅ hwmon |
+| Per-core CPU load | ✅ | ✅ | ✅ procfs |
 | Power | ✅ | ✅ | ✅ hwmon |
 | Voltages | ✅ | ✅ (core VID) | ✅ hwmon |
 | Clocks | ✅ | ✅ | ✅ cpufreq |
 | Fan speeds | ✅ | —¹ | ✅ hwmon |
 | Load / memory | ✅ | ✅ | ✅ procfs |
-| GPU | ✅ | ✅ | ✅ via amdgpu/i915/nouveau hwmon |
-| Storage | ✅ throughput | ✅ throughput | temperature only |
+| GPU | ✅ | ✅ | ✅ utilisation on amdgpu; temp/fan on i915/nouveau |
+| Storage | ✅ throughput | ✅ throughput | ✅ throughput + temp |
+| Network | ✅ | — | ✅ procfs |
 | Battery | ✅ | ✅ | — |
 | Firmware tables | ACPI + SMBIOS | —² | ACPI |
 | Needs elevation | **yes** (Ring-0 driver) | **no** | no (ACPI tables need root) |
 
-Linux coverage is whatever your loaded `hwmon` drivers expose — `coretemp`,
-`k10temp`, `amdgpu`, `nct6775`, `drivetemp` and so on. With none loaded you get
-CPU load and memory from procfs and little else.
+Linux reads per-core CPU from `/proc/stat`, disk throughput from
+`/proc/diskstats`, network from `/proc/net/dev` and GPU utilisation from
+amdgpu's `gpu_busy_percent` — none of which need a driver beyond what the
+kernel already provides. Temperatures, fans and voltages come from whatever
+`hwmon` drivers are loaded (`coretemp`, `k10temp`, `amdgpu`, `nct6775`,
+`drivetemp`).
 
 ¹ Not implemented. Fans would come from the same HID sensor plane as
 temperatures (a different usage page), but development happened on a fanless
@@ -413,8 +431,10 @@ tagged `v*` pushes publish installers to Releases.
 - NVMe S.M.A.R.T. health on macOS reports identity only — Apple's controller
   isn't a standard NVMe endpoint, so the health log page is unreachable; those
   fields report `Unknown` rather than a fabricated "Good".
-- Linux storage reports temperature only (via `drivetemp`), not throughput.
-- Linux coverage depends on which `hwmon` drivers are loaded.
+- GPU **utilisation** on Linux is amdgpu-only; Intel and nouveau expose no
+  equivalent and NVIDIA needs NVML.
+- Temperature/fan/voltage coverage on Linux still depends on which `hwmon`
+  drivers are loaded.
 
 ## Contributing
 

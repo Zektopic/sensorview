@@ -7,6 +7,7 @@ pub mod main_window;
 pub mod sensors_window;
 pub mod settings_dialog;
 pub mod summary_window;
+pub mod taskmgr_window;
 pub mod widgets;
 
 use std::collections::BTreeSet;
@@ -30,6 +31,7 @@ pub struct WindowFlags {
     pub summary: AtomicBool,
     pub settings: AtomicBool,
     pub hex: AtomicBool,
+    pub taskmgr: AtomicBool,
 }
 
 impl WindowFlags {
@@ -69,6 +71,10 @@ pub struct Shared {
     pub graphs: Arc<RwLock<BTreeSet<String>>>,
     /// Active CSV logger (owned/written by the poll thread).
     pub logger: Arc<Mutex<Option<CsvLogger>>>,
+    /// Process collector, present only while the Task Manager window is open.
+    /// Enumerating every process is not free, so it does not run when nobody
+    /// is looking at it; `Option` presence *is* the running state.
+    pub procs: Arc<Mutex<Option<crate::procs::ProcessCollector>>>,
     /// Whether this process is elevated (Some) or unknown/N-A (None). Detected
     /// in-process, so it's correct regardless of sidecar version.
     pub elevated: Option<bool>,
@@ -312,6 +318,17 @@ pub fn show_open_viewports(ctx: &egui::Context, shared: &Shared) {
                 .with_inner_size([900.0, 640.0])
                 .with_min_inner_size([700.0, 500.0]),
             move |ui, _class| summary_window::show(ui, &s),
+        );
+    }
+    if WindowFlags::is_open(&shared.windows.taskmgr) {
+        let s = shared.clone();
+        ctx.show_viewport_deferred(
+            egui::ViewportId::from_hash_of("taskmgr"),
+            egui::ViewportBuilder::default()
+                .with_title("SensorView - Task Manager")
+                .with_inner_size([980.0, 660.0])
+                .with_min_inner_size([760.0, 420.0]),
+            move |ui, _class| taskmgr_window::show(ui, &s),
         );
     }
     if WindowFlags::is_open(&shared.windows.hex) {
