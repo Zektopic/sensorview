@@ -1,4 +1,8 @@
 target/
+# The portable build uses its own target dir so it cannot overwrite the binary
+# the installer was built from — see release.yml.
+target-portable/
+target-portable-headless/
 sidecar/publish/
 sidecar/bin/
 sidecar/obj/

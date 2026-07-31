@@ -32,7 +32,7 @@ What remains open:
 Found by running the **release** binaries on Windows 11 for the first time
 (2026-07-31), which is also what retired the old "Windows CLI console handling
 is untested" entry. Three reproducible defects, plus the reason CI missed all of
-them. None are fixed yet.
+them. The elevation one is now fixed; the other two are still open.
 
 What *does* work, so it is not re-investigated: `AttachConsole` itself (a
 GUI-subsystem binary's subcommand output does reach a real console), the
@@ -63,32 +63,28 @@ Fix: on Windows either fall back to `Signal::Kill` with the wording changed to
 match, or disable the non-force action rather than offering something the
 platform cannot do.
 
-### Every release build demands elevation, including the headless one
+### ~~Every release build demands elevation, including the headless one~~ — fixed
 
-`build.rs` gates the `requireAdministrator` manifest on `PROFILE == "release"`
-alone, not on the `gui` feature. So the headless binary — the one the README
-offers "for servers and containers" — also requires admin. A non-elevated
-parent cannot start it at all:
+`build.rs` gated the `requireAdministrator` manifest on `PROFILE == "release"`
+alone, not on the `gui` feature, so the headless binary — the one the README
+offers "for servers and containers" — also demanded admin. A non-elevated
+parent could not start it at all: `CreateProcess` failed with
+`ERROR_ELEVATION_REQUIRED` (740), and with `UseShellExecute = false` there is no
+UAC prompt to accept, so a service, scheduled task, container entrypoint or CI
+step running as a normal user failed outright.
 
-```
-CreateProcess FAILED: The requested operation requires elevation   (error 740)
-```
+Now gated on the `gui` feature as well as the profile. Verified by PE header
+and by running the headless release binary unelevated, which previously could
+not start:
 
-With `UseShellExecute = false` there is no UAC prompt to accept: the process
-simply never starts, so a service, scheduled task, container entrypoint or CI
-step running as a normal user fails outright — and with it every documented
-scripting use of the CLI, since nothing can be piped or redirected from a
-process that never ran.
+| build | subsystem | manifest |
+|---|---|---|
+| release, `gui` | GUI | `requireAdministrator` |
+| release, headless | console | `asInvoker` |
 
-Scope of the claim, measured: this is specific to **non-interactive parents**.
-An interactive `ShellExecute` launch (double-click, a shortcut, `Start-Process`
-without `-NoNewWindow`) would raise a UAC prompt and succeed if the user
-consents — that path was not tested here. The failure case is the
-server/container/CI one, which is exactly what the headless build exists for.
-
-Fix: gate the manifest on the `gui` feature as well as the profile. An
-unelevated CLI should degrade to reading fewer sensors — which is what
-`lhm_bridge.rs` already documents — not refuse to launch.
+The GUI build still elevates deliberately — Super-I/O, MSR and SMBus sensors
+need it. An unelevated CLI now degrades to reading fewer sensors, which is what
+`lhm_bridge.rs` already documented, instead of refusing to launch.
 
 ### `--help`, `--version` and every clap error print nothing
 

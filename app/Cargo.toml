@@ -85,6 +85,12 @@ gui = ["dep:eframe", "dep:egui_extras", "dep:egui_tiles", "dep:image"]
 push = ["dep:ureq"]
 # `sensorview top` — a live terminal dashboard.
 tui = ["dep:ratatui", "dep:crossterm"]
+# Compile the LibreHardwareMonitor sidecar into the binary so a single
+# Windows .exe runs with nothing beside it. Off by default: it adds ~72 MB,
+# which only the portable release artifact wants to pay. Requires the sidecar
+# to have been published first — build.rs says so if it hasn't. A no-op on
+# macOS and Linux, which read their sensors natively.
+portable = []
 # The LAN dashboard tier. Compiling without it drops tokio/axum entirely and
 # yields a pure-GUI binary.
 web = [

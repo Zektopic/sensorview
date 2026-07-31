@@ -189,7 +189,8 @@ fn kill_stale_sidecars() {
 }
 
 /// Locate the sidecar: next to our exe (packaged install), then the dev
-/// publish folder (repo checkout).
+/// publish folder (repo checkout), then — in a `portable` build — the copy
+/// carried inside the binary.
 fn find_sidecar() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(me) = std::env::current_exe() {
@@ -232,5 +233,18 @@ fn find_sidecar() -> Option<PathBuf> {
             .join(SIDECAR_EXE),
     );
     }
-    candidates.into_iter().find(|p| p.is_file())
+    if let Some(found) = candidates.into_iter().find(|p| p.is_file()) {
+        return Some(found);
+    }
+
+    // Last: the copy a portable build carries inside itself. Deliberately after
+    // the on-disk candidates, so an installed layout or a developer's freshly
+    // published sidecar still wins — and so the 72 MB unpack only happens when
+    // there is genuinely nothing else to run.
+    #[cfg(all(windows, feature = "portable"))]
+    {
+        return crate::portable::ensure_sidecar();
+    }
+    #[cfg(not(all(windows, feature = "portable")))]
+    None
 }

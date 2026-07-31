@@ -120,6 +120,13 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
+      # The portable artifact is only built by release.yml, so without this it
+      # would break silently between tags and only be discovered while cutting
+      # a release. Windows-only: the embedded sidecar is a no-op elsewhere.
+      - name: Build the portable exe (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: cargo build --release --features portable --target-dir target-portable
+
       - name: Install cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
 
