@@ -2,7 +2,7 @@
 //! Sensors / Memory / About), device tree on the left, "Feature" detail pane
 //! on the right, machine-name status bar.
 
-use eframe::egui::{self, Align2, FontId, RichText};
+use eframe::egui::{self, Align2, FontId, Pos2, RichText};
 
 use super::widgets::{badge, info_row};
 use super::{Palette, Shared, WindowFlags};
@@ -54,6 +54,9 @@ pub fn show(ui: &mut egui::Ui, s: &Shared, state: &mut MainWindowState) {
                 }
                 if tool_button(ui, ToolIcon::Memory, "Memory", &pal) {
                     state.selected = Selection::Memory;
+                }
+                if tool_button(ui, ToolIcon::Tasks, "Task Manager", &pal) {
+                    WindowFlags::open(&s.windows.taskmgr);
                 }
                 if tool_button(ui, ToolIcon::Hex, "Hex", &pal) {
                     WindowFlags::open(&s.windows.hex);
@@ -206,6 +209,7 @@ enum ToolIcon {
     Save,
     Sensors,
     Memory,
+    Tasks,
     Hex,
     About,
 }
@@ -233,6 +237,16 @@ fn tool_button(ui: &mut egui::Ui, icon: ToolIcon, label: &str, pal: &Palette) ->
         ToolIcon::Memory => {
             let r = egui::Rect::from_center_size(c, egui::vec2(12.0, 7.0));
             p.rect_stroke(r, 0.0, egui::Stroke::new(1.2, pal.clockc), egui::StrokeKind::Inside);
+        }
+        ToolIcon::Tasks => {
+            // Three stacked bars, descending — a process list at a glance.
+            for (i, w) in [11.0f32, 8.0, 5.0].into_iter().enumerate() {
+                let y = c.y - 4.0 + i as f32 * 4.0;
+                p.line_segment(
+                    [Pos2::new(c.x - 5.5, y), Pos2::new(c.x - 5.5 + w, y)],
+                    egui::Stroke::new(1.6, pal.fanc),
+                );
+            }
         }
         ToolIcon::Hex => {
             p.text(c, Align2::CENTER_CENTER, "0x", FontId::monospace(10.0), pal.volt);

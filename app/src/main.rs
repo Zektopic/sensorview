@@ -130,6 +130,7 @@ mod gui {
             windows: Arc::new(WindowFlags::default()),
             graphs: Arc::new(RwLock::new(std::collections::BTreeSet::new())),
             logger: rt.logger.clone(),
+            procs: Arc::new(std::sync::Mutex::new(None)),
             elevated: sysinfo::is_elevated(),
             started: rt.started,
             #[cfg(feature = "web")]
@@ -215,6 +216,9 @@ mod gui {
         }
         if std::env::var("SENSORVIEW_SHOW_HEX").is_ok() {
             shared.windows.hex.store(true, Ordering::Relaxed);
+        }
+        if std::env::var("SENSORVIEW_SHOW_TASKMGR").is_ok() {
+            shared.windows.taskmgr.store(true, Ordering::Relaxed);
         }
         let open_graph = std::env::var("SENSORVIEW_OPEN_GRAPH").ok();
         let start_logging = std::env::var("SENSORVIEW_START_LOGGING").is_ok();
