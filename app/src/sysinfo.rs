@@ -204,9 +204,12 @@ fn intel_codename(family: u32, model: u32) -> &'static str {
         (0x6, 0x57) => "Knights Landing",
         (0x6, 0x85) => "Knights Mill",
 
-        // Anything else on family 6 is a part newer than this table. Say only
-        // what is certainly true.
-        (0x6, _) => "Intel Core",
+        // Anything else on family 6 is a part newer than this table. "Intel
+        // Core" would be a *guess*, not a cautious answer: family 6 also
+        // carries every Atom, and calling an Atom a Core is the same error
+        // this table exists to remove. Name only the family, as the 12h and
+        // 13h arms above do.
+        (0x6, _) => "Intel (family 6h)",
 
         // Family 15h — NetBurst (Hardware/CPU/IntelCPU.cs).
         (0xf, _) => "NetBurst",
@@ -960,7 +963,9 @@ mod tests {
         assert_eq!(codename_for("AuthenticAMD", 0x1a, 0xF0), "Zen 5");
         assert_eq!(codename_for("AuthenticAMD", 0x19, 0xF0), "Zen 3/Zen 4");
         assert_eq!(codename_for("AuthenticAMD", 0x17, 0xF0), "Zen/Zen+/Zen 2");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xFE), "Intel Core");
+        // Not "Intel Core": family 6 carries Atom parts too, so that would
+        // be a wrong brand rather than a cautious one.
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0xFE), "Intel (family 6h)");
     }
 
     #[test]
