@@ -101,7 +101,9 @@ fn codename_for(vendor: &str, family: u32, model: u32) -> String {
 ///
 /// Codes are the DMTF SMBIOS specification's, cross-checked against
 /// dmidecode's `dmi_memory_device_type` table, which runs from `0x01` to
-/// `0x24`.
+/// `0x24`. Every assigned code in that range is decoded; `0x15`–`0x17` are
+/// Reserved rather than memory types, so they fall to the unknown path along
+/// with anything DMTF has yet to assign.
 ///
 /// This used to decode exactly three values — DDR3, DDR4, DDR5 — and answer
 /// `"DRAM"` for everything else. The Summary appends " SDRAM" to whatever it
@@ -121,6 +123,11 @@ fn smbios_memory_type(code: u32) -> String {
         0x05 => "VRAM",
         0x06 => "SRAM",
         0x07 => "RAM",
+        0x08 => "ROM",
+        0x09 => "Flash",
+        0x0A => "EEPROM",
+        0x0B => "FEPROM",
+        0x0C => "EPROM",
         0x0D => "CDRAM",
         0x0E => "3DRAM",
         0x0F => "SDRAM",
@@ -877,6 +884,23 @@ mod tests {
         assert_eq!(smbios_memory_type(0x20), "HBM");
         assert_eq!(smbios_memory_type(0x21), "HBM2");
         assert_eq!(smbios_memory_type(0x24), "HBM3");
+    }
+
+    #[test]
+    fn every_assigned_code_from_1_to_0x24_decodes_to_a_name() {
+        // The claim this table makes: no assigned code falls through. 0x15-0x17
+        // are Reserved rather than memory types, so they are the exception.
+        for code in 0x01..=0x24u32 {
+            let decoded = smbios_memory_type(code);
+            if (0x15..=0x17).contains(&code) {
+                assert_eq!(decoded, format!("Unknown (type {code:#04X})"));
+            } else {
+                assert!(
+                    !decoded.starts_with("Unknown (type"),
+                    "assigned code {code:#04X} fell through to the unknown path"
+                );
+            }
+        }
     }
 
     #[test]
