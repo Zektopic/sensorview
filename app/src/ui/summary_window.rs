@@ -183,7 +183,7 @@ fn board_memory_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, pal: &
         let mem_type = i
             .memory_modules
             .first()
-            .map(|m| format!("{} SDRAM", m.memory_type))
+            .map(|m| crate::sysinfo::memory_type_label(&m.memory_type))
             .unwrap_or_default();
         info_row(ui, "Type:", &mem_type, pal);
         let clock = i

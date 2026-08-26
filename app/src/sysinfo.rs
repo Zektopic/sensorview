@@ -97,6 +97,71 @@ fn codename_for(vendor: &str, family: u32, model: u32) -> String {
     }
 }
 
+/// SMBIOS *Memory Device* (structure type 17) memory-type code → display name.
+///
+/// Codes are the DMTF SMBIOS specification's, cross-checked against
+/// dmidecode's `dmi_memory_device_type` table, which runs from `0x01` to
+/// `0x24`.
+///
+/// This used to decode exactly three values — DDR3, DDR4, DDR5 — and answer
+/// `"DRAM"` for everything else. The Summary appends " SDRAM" to whatever it
+/// gets, so the fallback rendered as the literal string "DRAM SDRAM". Every
+/// soldered-memory machine reports an LPDDR code, so that was most current
+/// laptop hardware.
+///
+/// A code the table does not know is reported as `Unknown (type 0x??)` rather
+/// than guessed at: the raw code is what lets someone look it up, and DMTF
+/// assigns new ones as memory generations ship.
+#[allow(dead_code)] // Only reachable from the Windows WMI path.
+fn smbios_memory_type(code: u32) -> String {
+    let name = match code {
+        0x01 | 0x02 => "Unknown", // "Other" and "Unknown" are both non-answers.
+        0x03 => "DRAM",
+        0x04 => "EDRAM",
+        0x05 => "VRAM",
+        0x06 => "SRAM",
+        0x07 => "RAM",
+        0x0D => "CDRAM",
+        0x0E => "3DRAM",
+        0x0F => "SDRAM",
+        0x10 => "SGRAM",
+        0x11 => "RDRAM",
+        0x12 => "DDR",
+        0x13 => "DDR2",
+        0x14 => "DDR2 FB-DIMM",
+        0x18 => "DDR3",
+        0x19 => "FBD2",
+        0x1A => "DDR4",
+        0x1B => "LPDDR",
+        0x1C => "LPDDR2",
+        0x1D => "LPDDR3",
+        0x1E => "LPDDR4",
+        0x1F => "Logical non-volatile device",
+        0x20 => "HBM",
+        0x21 => "HBM2",
+        0x22 => "DDR5",
+        0x23 => "LPDDR5",
+        0x24 => "HBM3",
+        _ => return format!("Unknown (type {code:#04X})"),
+    };
+    name.to_string()
+}
+
+/// How the Summary labels a module: "DDR5" becomes "DDR5 SDRAM", but "HBM3"
+/// and "Unknown" are left alone.
+///
+/// The suffix used to be appended unconditionally, which is where "DRAM SDRAM"
+/// came from. Only the DDR and LPDDR families are synchronous DRAM in the
+/// sense that suffix means.
+#[allow(dead_code)] // Only the GUI renders this; headless builds don't link it.
+pub fn memory_type_label(memory_type: &str) -> String {
+    if memory_type.starts_with("DDR") || memory_type.starts_with("LPDDR") {
+        format!("{memory_type} SDRAM")
+    } else {
+        memory_type.to_string()
+    }
+}
+
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct BoardInfo {
     pub product: String,
@@ -471,12 +536,12 @@ fn query() -> SystemInfo {
         for r in &rows {
             let capacity_gb = u64v(r.get("Capacity")).map(|b| b as f64 / (1u64 << 30) as f64).unwrap_or(0.0);
             total += capacity_gb;
-            let mem_type = match u(r.get("SMBIOSMemoryType")) {
-                Some(26) => "DDR4",
-                Some(34) => "DDR5",
-                Some(24) => "DDR3",
-                _ => "DRAM",
-            };
+            // An absent field is left blank; a present one is decoded, so an
+            // unrecognised code shows as `Unknown (type 0x??)` rather than
+            // being flattened into a wrong name.
+            let mem_type = u(r.get("SMBIOSMemoryType"))
+                .map(smbios_memory_type)
+                .unwrap_or_default();
             info.memory_modules.push(MemoryModule {
                 bank: {
                     let bank = s(r.get("BankLabel"));
@@ -778,5 +843,64 @@ fn query() -> SystemInfo {
         user_name: std::env::var("USER").unwrap_or_default(),
         cpu: CpuInfo { features: cpu_features(), cpuid, vendor, codename, ..Default::default() },
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Codes are the DMTF SMBIOS values, cross-checked against dmidecode's
+    // `dmi_memory_device_type` table. These run on every platform, since the
+    // decoder takes the raw code rather than reading WMI.
+
+    #[test]
+    fn the_three_codes_that_already_worked_still_decode_the_same_way() {
+        assert_eq!(smbios_memory_type(24), "DDR3");
+        assert_eq!(smbios_memory_type(26), "DDR4");
+        assert_eq!(smbios_memory_type(34), "DDR5");
+    }
+
+    #[test]
+    fn soldered_laptop_memory_is_named_rather_than_flattened_to_dram() {
+        // The reason for the change: every one of these used to fall through
+        // to "DRAM" and render as "DRAM SDRAM".
+        assert_eq!(smbios_memory_type(0x1B), "LPDDR");
+        assert_eq!(smbios_memory_type(0x1C), "LPDDR2");
+        assert_eq!(smbios_memory_type(0x1D), "LPDDR3");
+        assert_eq!(smbios_memory_type(0x1E), "LPDDR4");
+        assert_eq!(smbios_memory_type(0x23), "LPDDR5");
+    }
+
+    #[test]
+    fn stacked_memory_decodes_too() {
+        assert_eq!(smbios_memory_type(0x20), "HBM");
+        assert_eq!(smbios_memory_type(0x21), "HBM2");
+        assert_eq!(smbios_memory_type(0x24), "HBM3");
+    }
+
+    #[test]
+    fn an_unassigned_code_reports_the_raw_value_instead_of_guessing() {
+        // 0x25 is past the last code DMTF has assigned. Showing the number is
+        // what lets someone look it up.
+        assert_eq!(smbios_memory_type(0x25), "Unknown (type 0x25)");
+        assert_eq!(smbios_memory_type(0xFF), "Unknown (type 0xFF)");
+    }
+
+    #[test]
+    fn smbios_other_and_unknown_are_both_reported_as_unknown() {
+        assert_eq!(smbios_memory_type(0x01), "Unknown");
+        assert_eq!(smbios_memory_type(0x02), "Unknown");
+    }
+
+    #[test]
+    fn the_sdram_suffix_is_only_added_where_it_means_something() {
+        assert_eq!(memory_type_label("DDR5"), "DDR5 SDRAM");
+        assert_eq!(memory_type_label("LPDDR5"), "LPDDR5 SDRAM");
+        // These are the ones that used to produce nonsense.
+        assert_eq!(memory_type_label("HBM3"), "HBM3");
+        assert_eq!(memory_type_label("Unknown"), "Unknown");
+        assert_eq!(memory_type_label("Unknown (type 0x25)"), "Unknown (type 0x25)");
+        assert_eq!(memory_type_label(""), "");
     }
 }
