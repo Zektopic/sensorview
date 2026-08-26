@@ -76,8 +76,13 @@ pub fn states(block: Block) -> Vec<State> {
 
 /// Decode packed `(freq, voltage)` `u32` pairs.
 fn parse_states(bytes: &[u8]) -> Vec<State> {
+    // `as_chunks` rather than `chunks_exact` — same semantics (the trailing
+    // partial pair is dropped either way), but it yields a fixed-size array and
+    // satisfies clippy's `chunks_exact_to_as_chunks`, new in Rust 1.98.
     let pairs: Vec<(u32, u32)> = bytes
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|c| {
             (
                 u32::from_le_bytes([c[0], c[1], c[2], c[3]]),

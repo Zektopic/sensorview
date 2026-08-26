@@ -187,8 +187,13 @@ mod windows_impl {
             }
             buf.truncate(written.min(size) as usize);
             // The enumeration is an array of table IDs (4-byte signatures).
-            buf.chunks_exact(4)
-                .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            // `as_chunks` rather than `chunks_exact`: it yields `&[u8; 4]`,
+            // so the signature converts without re-indexing, and clippy's
+            // `chunks_exact_to_as_chunks` (new in Rust 1.98) asks for it.
+            buf.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_ne_bytes(*c))
                 .collect::<Vec<u32>>()
         };
 
