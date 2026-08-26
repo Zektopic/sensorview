@@ -113,7 +113,11 @@ jobs:
           #
           # These paths are relative to the *workspace root*, not to app/. See
           # the note on the publish step.
+          #
+          # `os` — not the runner label — is what the per-step guards key on,
+          # because there are now two Linux labels. See ci.yml.
           - platform: windows-latest
+            os: windows
             formats: nsis
             artifacts: |
               app/target/release/*-setup.exe
@@ -122,11 +126,26 @@ jobs:
           # from 2026-09-17). See the matching note in ci.yml for the glibc
           # 2.39 floor this puts on the .deb and .AppImage.
           - platform: ubuntu-24.04
+            os: linux
             formats: deb,appimage
             artifacts: |
               app/target/release/*.deb
               app/target/release/*.AppImage
+          # arm64 Linux, built natively — see the long note in ci.yml for why
+          # this is a real runner rather than a cross-build, and why it is
+          # `deb` only.
+          #
+          # Both Linux legs glob `*.deb`, which is safe because cargo-packager
+          # puts the architecture in the filename (`_amd64.deb` vs
+          # `_arm64.deb`), so neither leg can match the other's artifact and
+          # the release ends up with both.
+          - platform: ubuntu-24.04-arm
+            os: linux
+            formats: deb
+            artifacts: |
+              app/target/release/*.deb
           - platform: macos-latest
+            os: macos
             formats: dmg
             artifacts: |
               app/target/release/*.dmg
@@ -142,7 +161,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Linux build dependencies
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.os == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -217,7 +236,7 @@ jobs:
           grep -m1 'MyAppVersion "' installer/SensorView_Setup.iss
 
       - name: Publish LHM bridge sidecar (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.os == 'windows'
         run: dotnet publish sidecar -c Release -o sidecar/publish
 
       - name: Run tests
@@ -235,7 +254,7 @@ jobs:
           EXPECTED: ${{ needs.prepare.outputs.version }}
         run: |
           bin=target/release/sensorview
-          [ "${{ matrix.platform }}" = "windows-latest" ] && bin=target/release/sensorview.exe
+          [ "${{ matrix.os }}" = "windows" ] && bin=target/release/sensorview.exe
           actual="$("$bin" --version | awk '{print $NF}')"
           echo "expected $EXPECTED, binary reports $actual"
           if [ "$actual" != "$EXPECTED" ]; then
@@ -261,7 +280,7 @@ jobs:
       # cargo-packager has just wrapped into the installer, then copied into
       # target/release/ under its final name for the upload glob below.
       - name: Build the portable exe (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.os == 'windows'
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -321,7 +340,8 @@ jobs:
             | Windows | `SensorView_*_x64-setup.exe` | Installer |
             | Windows | `SensorView-*-portable.exe` | Single file, no install — see below |
             | macOS (Apple Silicon) | `*.dmg` | Unsigned; System Settings → Privacy & Security → Open Anyway |
-            | Linux | `*.deb` / `*.AppImage` | |
+            | Linux (x86-64) | `*_amd64.deb` / `*.AppImage` | Needs glibc 2.39+ |
+            | Linux (arm64) | `*_arm64.deb` | Pi 5, Ampere/Graviton, Snapdragon X |
 
             **The portable Windows build** is one self-contained `.exe`. It
             carries the LibreHardwareMonitor sensor bridge inside it and unpacks

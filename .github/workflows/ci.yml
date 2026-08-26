@@ -19,7 +19,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `os` is what the per-step guards key on, never the runner label:
+          # there are now two Linux labels, so `platform == 'ubuntu-24.04'`
+          # would silently skip the apt step on the arm64 leg and fail it at
+          # the eframe build instead.
           - platform: windows-latest
+            os: windows
             formats: nsis
           # Pinned rather than `ubuntu-latest` so the glibc floor of the .deb
           # and .AppImage is a decision, not whatever GitHub last moved the
@@ -29,8 +34,32 @@ jobs:
           # so the Linux artifacts no longer run on Ubuntu 22.04 or Debian 12 —
           # stated in the README's Install section.
           - platform: ubuntu-24.04
+            os: linux
             formats: deb,appimage
+          # arm64 Linux — Raspberry Pi 5, Ampere/Graviton servers, Snapdragon X
+          # laptops running Linux. A *native* runner, not a cross-build: this
+          # repo cannot cross-compile (TODO.md — `ring`'s build script needs a
+          # target C toolchain), and ARM AppImages can only be produced on ARM
+          # hardware anyway.
+          #
+          # Nothing in the sensor path is x86-specific: the Linux backend is
+          # sysfs and procfs (src/source/linux.rs), which is architecture
+          # neutral, and the one place that does read CPUID is already gated —
+          # src/sysinfo.rs has an explicit
+          # `not(any(target_arch = "x86_64", ...))` arm. So aarch64 compiles
+          # today; what it loses is the CPUID signature, the codename and the
+          # x86 feature-flag list in the System Summary, which report empty.
+          #
+          # `deb` only, deliberately. cargo-packager's AppImage path fetches
+          # linuxdeploy, and whether it resolves an aarch64 build of it is
+          # unverified — adding `appimage` here on a guess would make the leg
+          # red for a reason unrelated to this project. Widen it once someone
+          # has watched it work.
+          - platform: ubuntu-24.04-arm
+            os: linux
+            formats: deb
           - platform: macos-latest
+            os: macos
             formats: dmg
     runs-on: ${{ matrix.platform }}
     defaults:
@@ -40,7 +69,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.os == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -55,7 +84,7 @@ jobs:
           workspaces: app -> target
 
       - name: Publish LHM bridge sidecar (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.os == 'windows'
         run: dotnet publish sidecar -c Release -o sidecar/publish
 
       # Failing test names are echoed as ::error:: annotations so they show up
@@ -131,7 +160,7 @@ jobs:
       # would break silently between tags and only be discovered while cutting
       # a release. Windows-only: the embedded sidecar is a no-op elsewhere.
       - name: Build the portable exe (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.os == 'windows'
         run: cargo build --release --features portable --target-dir target-portable
 
       - name: Install cargo-packager

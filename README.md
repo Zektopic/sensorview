@@ -248,7 +248,8 @@ Download the installer for your platform from [Releases](https://github.com/Zekt
 | Windows | `SensorView_<ver>_x64-setup.exe` (NSIS) | Bundles the sensor sidecar; optionally installs the PawnIO driver |
 | Windows | `SensorView-<ver>-portable.exe` | One file, no install — see below |
 | macOS | `SensorView_<ver>_aarch64.dmg` | Apple Silicon only; **unsigned** — see below |
-| Linux | `.deb` / `.AppImage` | |
+| Linux (x86-64) | `.deb` / `.AppImage` | |
+| Linux (arm64) | `_arm64.deb` | Raspberry Pi 5, Ampere/Graviton, Snapdragon X — see below |
 
 **The portable Windows build** is a single self-contained `.exe`. Every Windows
 sensor comes from the LibreHardwareMonitor sidecar, so the portable build
@@ -256,6 +257,15 @@ carries that sidecar inside the binary and unpacks it to
 `%LOCALAPPDATA%\SensorView\bridge\` the first time it runs — which is why it is
 several times the size of the installer, and why it works from a USB stick with
 nothing beside it. Delete that folder to reclaim the space once you are done.
+
+**Linux on arm64** gets a `.deb` only — no AppImage yet. Sensor coverage is the
+same as on x86-64, because the Linux backend reads `hwmon`, `/proc` and
+`cpufreq`, none of which are architecture-specific. What is missing is the
+x86-only part of the **System Summary**: the CPUID signature, the
+microarchitecture codename and the instruction-set feature list are blank,
+since those come from the `CPUID` instruction. Everything else — temperatures,
+per-core load, clocks, power, disks, network, the Task Manager, the web
+dashboard — behaves identically.
 
 **Linux glibc requirement:** the `.deb` and `.AppImage` are built on Ubuntu
 24.04, so they need **glibc 2.39 or newer** — Ubuntu 24.04+, Debian 13+,
