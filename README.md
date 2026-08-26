@@ -257,6 +257,12 @@ carries that sidecar inside the binary and unpacks it to
 several times the size of the installer, and why it works from a USB stick with
 nothing beside it. Delete that folder to reclaim the space once you are done.
 
+**Linux glibc requirement:** the `.deb` and `.AppImage` are built on Ubuntu
+24.04, so they need **glibc 2.39 or newer** — Ubuntu 24.04+, Debian 13+,
+Fedora 40+. They will not run on Ubuntu 22.04 or Debian 12; build from source
+there. (The build moved off the Ubuntu 22.04 runner because GitHub retires that
+image from 2026-09-17.)
+
 **macOS first launch:** the `.dmg` is currently unsigned and un-notarized, so
 Gatekeeper will block it. Open **System Settings → Privacy & Security**, find the
 blocked-app notice, and choose **Open Anyway**.

@@ -118,7 +118,10 @@ jobs:
             artifacts: |
               app/target/release/*-setup.exe
               app/target/release/*-portable.exe
-          - platform: ubuntu-22.04
+          # Pinned deliberately; ubuntu-22.04 is being retired (deprecation
+          # from 2026-09-17). See the matching note in ci.yml for the glibc
+          # 2.39 floor this puts on the .deb and .AppImage.
+          - platform: ubuntu-24.04
             formats: deb,appimage
             artifacts: |
               app/target/release/*.deb
@@ -139,7 +142,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Linux build dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
