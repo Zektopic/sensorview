@@ -71,150 +71,101 @@ fn cpuid_info() -> (String, String, String) {
     }
 }
 
-/// Microarchitecture codename for an x86 CPU, from its CPUID family and model.
-///
-/// Sourcing matters here, because a *wrong* codename is worse than none: it is
-/// rendered in the System Summary directly beside the CPUID signature a user
-/// can check it against. Three sources, none of them guesswork:
-///
-/// * Intel up to Tiger Lake / Comet Lake — this repository's own
-///   `Hardware/CPU/IntelCPU.cs`, the original OpenHardwareMonitor detection
-///   these sources are a port of.
-/// * Intel from Rocket Lake onwards, plus the Atom and Xeon lines — the Linux
-///   kernel's `arch/x86/include/asm/intel-family.h`.
-/// * AMD — libcpuid's `recog_amd.c`.
-///
-/// Where a source names a specific part, that name is used. Where none does,
-/// the arm falls back to a *generation* label that is true for every member of
-/// the family rather than inventing a codename, and an unrecognised family
-/// returns `""`, which callers already render as blank.
-#[allow(dead_code)] // Not reachable on non-x86_64 targets; see `cpuid_info`.
+/// Coarse codename map for recent AMD/Intel desktop parts (best effort).
+#[allow(dead_code)]
 fn codename_for(vendor: &str, family: u32, model: u32) -> String {
     if vendor.contains("AuthenticAMD") {
-        amd_codename(family, model).to_string()
+        match (family, model) {
+            (0x19, 0x60..=0x6f) => "Raphael (Zen 4)",
+            (0x19, 0x70..=0x7f) => "Phoenix (Zen 4)",
+            (0x19, 0x40..=0x4f) => "Rembrandt (Zen 3+)",
+            (0x19, 0x20..=0x2f) => "Vermeer (Zen 3)",
+            (0x19, 0x50..=0x5f) => "Cezanne (Zen 3)",
+            (0x1a, _) => "Granite Ridge (Zen 5)",
+            (0x17, _) => "Matisse/Renoir (Zen 2)",
+            _ => "",
+        }
+        .to_string()
     } else if vendor.contains("GenuineIntel") {
-        intel_codename(family, model).to_string()
+        match family {
+            0x6 => "Intel Core",
+            _ => "",
+        }
+        .to_string()
     } else {
-        // Neither vendor — a VM's synthetic CPUID, a Hygon part, or an
-        // emulated x86. Nothing truthful to say.
         String::new()
     }
 }
 
-/// AMD, keyed on family then model's high nibble — the grouping AMD itself
-/// uses to separate parts within a family.
+/// SMBIOS *Memory Device* (structure type 17) memory-type code → display name.
 ///
-/// Every family arm ends in a catch-all naming only the *generation*, which is
-/// safe because AMD does not mix generations within these families: 17h is
-/// Zen through Zen 2, 19h is Zen 3 and Zen 4, 1Ah is Zen 5 throughout. A
-/// part released after this table was written therefore still reports its
-/// generation correctly instead of falling through to blank.
-fn amd_codename(family: u32, model: u32) -> &'static str {
-    match (family, model) {
-        // --- Zen 5, family 1Ah ---------------------------------------------
-        // libcpuid: family 26 model 2 (Turin), 36/0x24 (Strix Point),
-        // 68/0x44 (Granite Ridge).
-        (0x1a, 0x00..=0x0f) => "Turin (Zen 5)",
-        (0x1a, 0x20..=0x2f) => "Strix Point (Zen 5)",
-        (0x1a, 0x40..=0x4f) => "Granite Ridge (Zen 5)",
-        (0x1a, _) => "Zen 5",
-
-        // --- Zen 3, Zen 3+ and Zen 4 all share family 19h ------------------
-        // libcpuid: family 25 models 1 (Milan), 33/0x21 (Vermeer),
-        // 68/0x44 (Rembrandt), 80/0x50 (Cezanne), 116/0x74 (Phoenix).
-        (0x19, 0x00..=0x0f) => "Milan (Zen 3)",
-        (0x19, 0x20..=0x2f) => "Vermeer (Zen 3)",
-        (0x19, 0x40..=0x4f) => "Rembrandt (Zen 3+)",
-        (0x19, 0x50..=0x5f) => "Cezanne (Zen 3)",
-        (0x19, 0x60..=0x6f) => "Raphael (Zen 4)",
-        (0x19, 0x70..=0x7f) => "Phoenix (Zen 4)",
-        (0x19, _) => "Zen 3/Zen 4",
-
-        // --- Zen, Zen+ and Zen 2 share family 17h --------------------------
-        // libcpuid: family 23 model 1 (Naples / Whitehaven / Summit Ridge).
-        // The rest of 17h is deliberately generic — this used to claim
-        // "Matisse/Renoir (Zen 2)" for the whole family, which mislabelled
-        // every first-generation Ryzen as a Zen 2 part.
-        (0x17, 0x00..=0x0f) => "Summit Ridge/Naples (Zen)",
-        (0x17, _) => "Zen/Zen+/Zen 2",
-
-        _ => "",
-    }
+/// Codes are the DMTF SMBIOS specification's, cross-checked against
+/// dmidecode's `dmi_memory_device_type` table, which runs from `0x01` to
+/// `0x24`. Every assigned code in that range is decoded; `0x15`–`0x17` are
+/// Reserved rather than memory types, so they fall to the unknown path along
+/// with anything DMTF has yet to assign.
+///
+/// This used to decode exactly three values — DDR3, DDR4, DDR5 — and answer
+/// `"DRAM"` for everything else. The Summary appends " SDRAM" to whatever it
+/// gets, so the fallback rendered as the literal string "DRAM SDRAM". Every
+/// soldered-memory machine reports an LPDDR code, so that was most current
+/// laptop hardware.
+///
+/// A code the table does not know is reported as `Unknown (type 0x??)` rather
+/// than guessed at: the raw code is what lets someone look it up, and DMTF
+/// assigns new ones as memory generations ship.
+#[allow(dead_code)] // Only reachable from the Windows WMI path.
+fn smbios_memory_type(code: u32) -> String {
+    let name = match code {
+        0x01 | 0x02 => "Unknown", // "Other" and "Unknown" are both non-answers.
+        0x03 => "DRAM",
+        0x04 => "EDRAM",
+        0x05 => "VRAM",
+        0x06 => "SRAM",
+        0x07 => "RAM",
+        0x08 => "ROM",
+        0x09 => "Flash",
+        0x0A => "EEPROM",
+        0x0B => "FEPROM",
+        0x0C => "EPROM",
+        0x0D => "CDRAM",
+        0x0E => "3DRAM",
+        0x0F => "SDRAM",
+        0x10 => "SGRAM",
+        0x11 => "RDRAM",
+        0x12 => "DDR",
+        0x13 => "DDR2",
+        0x14 => "DDR2 FB-DIMM",
+        0x18 => "DDR3",
+        0x19 => "FBD2",
+        0x1A => "DDR4",
+        0x1B => "LPDDR",
+        0x1C => "LPDDR2",
+        0x1D => "LPDDR3",
+        0x1E => "LPDDR4",
+        0x1F => "Logical non-volatile device",
+        0x20 => "HBM",
+        0x21 => "HBM2",
+        0x22 => "DDR5",
+        0x23 => "LPDDR5",
+        0x24 => "HBM3",
+        _ => return format!("Unknown (type {code:#04X})"),
+    };
+    name.to_string()
 }
 
-/// Intel. Family 6 carried everything from the Pentium Pro to Panther Lake, so
-/// the model is what identifies a part; Nova Lake (18h) and Diamond Rapids
-/// (19h) are the first to move off it, which is why this matches on the family
-/// rather than assuming 6.
-fn intel_codename(family: u32, model: u32) -> &'static str {
-    match (family, model) {
-        // --- Families 12h and 13h: the move off family 6 -------------------
-        (0x12, 0x01 | 0x03) => "Nova Lake (Coyote Cove/Arctic Wolf)",
-        (0x12, _) => "Intel (family 12h)",
-        (0x13, 0x01) => "Diamond Rapids (Panther Cove)",
-        (0x13, _) => "Intel (family 13h)",
-
-        // --- Family 6, newest first ---------------------------------------
-        (0x6, 0xE5 | 0xCC) => "Panther Lake (Cougar Cove/Darkmont)",
-        (0x6, 0xDD) => "Clearwater Forest (Darkmont)",
-        (0x6, 0xD7) => "Bartlett Lake (Raptor Cove)",
-        (0x6, 0xD5) => "Wildcat Lake",
-        (0x6, 0xC6 | 0xC5 | 0xB5) => "Arrow Lake (Lion Cove/Skymont)",
-        (0x6, 0xBD) => "Lunar Lake (Lion Cove/Skymont)",
-        (0x6, 0xCF) => "Emerald Rapids (Raptor Cove)",
-        (0x6, 0xAD | 0xAE) => "Granite Rapids (Redwood Cove)",
-        (0x6, 0xAF) => "Sierra Forest (Crestmont)",
-        (0x6, 0xB6) => "Grand Ridge (Crestmont)",
-        (0x6, 0xAC | 0xAA) => "Meteor Lake (Redwood Cove/Crestmont)",
-        (0x6, 0xB7 | 0xBA | 0xBF) => "Raptor Lake (Raptor Cove/Gracemont)",
-        (0x6, 0xBE) => "Alder Lake-N (Gracemont)",
-        (0x6, 0x97 | 0x9A) => "Alder Lake (Golden Cove/Gracemont)",
-        (0x6, 0x8F) => "Sapphire Rapids (Golden Cove)",
-        (0x6, 0xA7) => "Rocket Lake (Cypress Cove)",
-        (0x6, 0x8A) => "Lakefield (Sunny Cove/Tremont)",
-
-        // --- Family 6, from Hardware/CPU/IntelCPU.cs -----------------------
-        (0x6, 0x8C | 0x8D) => "Tiger Lake",
-        (0x6, 0xA5 | 0xA6) => "Comet Lake",
-        (0x6, 0x7D | 0x7E | 0x6A | 0x6C | 0x9D) => "Ice Lake",
-        (0x6, 0x66) => "Cannon Lake",
-        (0x6, 0x8E | 0x9E) => "Kaby Lake",
-        (0x6, 0x4E | 0x5E | 0x55) => "Skylake",
-        (0x6, 0x3D | 0x47 | 0x4F | 0x56) => "Broadwell",
-        (0x6, 0x3C | 0x3F | 0x45 | 0x46) => "Haswell",
-        (0x6, 0x3A | 0x3E) => "Ivy Bridge",
-        (0x6, 0x2A | 0x2D) => "Sandy Bridge",
-        (0x6, 0x25 | 0x2C | 0x2F) => "Westmere",
-        (0x6, 0x1A | 0x1E | 0x1F | 0x2E) => "Nehalem",
-        (0x6, 0x0F | 0x16 | 0x17 | 0x1D) => "Core 2",
-
-        // Atom. Previously all of these reported "Intel Core", which is not a
-        // vaguer answer but a wrong one.
-        (0x6, 0x9C) => "Jasper Lake (Tremont)",
-        (0x6, 0x96) => "Elkhart Lake (Tremont)",
-        (0x6, 0x86) => "Jacobsville (Tremont)",
-        (0x6, 0x7A) => "Gemini Lake (Goldmont Plus)",
-        (0x6, 0x5C) => "Apollo Lake (Goldmont)",
-        (0x6, 0x5F) => "Denverton (Goldmont)",
-        (0x6, 0x4C) => "Cherry Trail (Airmont)",
-        (0x6, 0x75) => "Lightning Mountain (Airmont)",
-        (0x6, 0x37 | 0x4A | 0x4D | 0x5A) => "Silvermont",
-        (0x6, 0x35 | 0x36) => "Saltwell",
-        (0x6, 0x1C | 0x26 | 0x27) => "Bonnell",
-        (0x6, 0x57) => "Knights Landing",
-        (0x6, 0x85) => "Knights Mill",
-
-        // Anything else on family 6 is a part newer than this table. "Intel
-        // Core" would be a *guess*, not a cautious answer: family 6 also
-        // carries every Atom, and calling an Atom a Core is the same error
-        // this table exists to remove. Name only the family, as the 12h and
-        // 13h arms above do.
-        (0x6, _) => "Intel (family 6h)",
-
-        // Family 15h — NetBurst (Hardware/CPU/IntelCPU.cs).
-        (0xf, _) => "NetBurst",
-
-        _ => "",
+/// How the Summary labels a module: "DDR5" becomes "DDR5 SDRAM", but "HBM3"
+/// and "Unknown" are left alone.
+///
+/// The suffix used to be appended unconditionally, which is where "DRAM SDRAM"
+/// came from. Only the DDR and LPDDR families are synchronous DRAM in the
+/// sense that suffix means.
+#[allow(dead_code)] // Only the GUI renders this; headless builds don't link it.
+pub fn memory_type_label(memory_type: &str) -> String {
+    if memory_type.starts_with("DDR") || memory_type.starts_with("LPDDR") {
+        format!("{memory_type} SDRAM")
+    } else {
+        memory_type.to_string()
     }
 }
 
@@ -592,12 +543,12 @@ fn query() -> SystemInfo {
         for r in &rows {
             let capacity_gb = u64v(r.get("Capacity")).map(|b| b as f64 / (1u64 << 30) as f64).unwrap_or(0.0);
             total += capacity_gb;
-            let mem_type = match u(r.get("SMBIOSMemoryType")) {
-                Some(26) => "DDR4",
-                Some(34) => "DDR5",
-                Some(24) => "DDR3",
-                _ => "DRAM",
-            };
+            // An absent field is left blank; a present one is decoded, so an
+            // unrecognised code shows as `Unknown (type 0x??)` rather than
+            // being flattened into a wrong name.
+            let mem_type = u(r.get("SMBIOSMemoryType"))
+                .map(smbios_memory_type)
+                .unwrap_or_default();
             info.memory_modules.push(MemoryModule {
                 bank: {
                     let bank = s(r.get("BankLabel"));
@@ -906,89 +857,74 @@ fn query() -> SystemInfo {
 mod tests {
     use super::*;
 
-    // These run on every CI leg, including aarch64, because `codename_for`
-    // takes the family and model as arguments rather than executing CPUID.
+    // Codes are the DMTF SMBIOS values, cross-checked against dmidecode's
+    // `dmi_memory_device_type` table. These run on every platform, since the
+    // decoder takes the raw code rather than reading WMI.
 
     #[test]
-    fn intel_hybrid_parts_are_named_rather_than_all_reporting_intel_core() {
-        // The whole point of the change: every one of these used to be
-        // indistinguishable, because family 6 was matched without the model.
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0x97), "Alder Lake (Golden Cove/Gracemont)");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xBF), "Raptor Lake (Raptor Cove/Gracemont)");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xAA), "Meteor Lake (Redwood Cove/Crestmont)");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xC6), "Arrow Lake (Lion Cove/Skymont)");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xBD), "Lunar Lake (Lion Cove/Skymont)");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xCC), "Panther Lake (Cougar Cove/Darkmont)");
+    fn the_three_codes_that_already_worked_still_decode_the_same_way() {
+        assert_eq!(smbios_memory_type(24), "DDR3");
+        assert_eq!(smbios_memory_type(26), "DDR4");
+        assert_eq!(smbios_memory_type(34), "DDR5");
     }
 
     #[test]
-    fn intel_parts_off_family_six_are_recognised() {
-        // Nova Lake and Diamond Rapids are the first Intel parts to leave
-        // family 6; matching on the family alone reported "" for them.
-        assert_eq!(codename_for("GenuineIntel", 0x12, 0x01), "Nova Lake (Coyote Cove/Arctic Wolf)");
-        assert_eq!(codename_for("GenuineIntel", 0x13, 0x01), "Diamond Rapids (Panther Cove)");
+    fn soldered_laptop_memory_is_named_rather_than_flattened_to_dram() {
+        // The reason for the change: every one of these used to fall through
+        // to "DRAM" and render as "DRAM SDRAM".
+        assert_eq!(smbios_memory_type(0x1B), "LPDDR");
+        assert_eq!(smbios_memory_type(0x1C), "LPDDR2");
+        assert_eq!(smbios_memory_type(0x1D), "LPDDR3");
+        assert_eq!(smbios_memory_type(0x1E), "LPDDR4");
+        assert_eq!(smbios_memory_type(0x23), "LPDDR5");
     }
 
     #[test]
-    fn an_atom_is_not_called_a_core() {
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0x9C), "Jasper Lake (Tremont)");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xBE), "Alder Lake-N (Gracemont)");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xAF), "Sierra Forest (Crestmont)");
+    fn stacked_memory_decodes_too() {
+        assert_eq!(smbios_memory_type(0x20), "HBM");
+        assert_eq!(smbios_memory_type(0x21), "HBM2");
+        assert_eq!(smbios_memory_type(0x24), "HBM3");
     }
 
     #[test]
-    fn historic_intel_parts_still_match_the_c_sharp_table_they_came_from() {
-        // Hardware/CPU/IntelCPU.cs, which these sources are a port of.
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0x8D), "Tiger Lake");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xA5), "Comet Lake");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0x3C), "Haswell");
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0x2A), "Sandy Bridge");
-        assert_eq!(codename_for("GenuineIntel", 0xf, 0x03), "NetBurst");
+    fn every_assigned_code_from_1_to_0x24_decodes_to_a_name() {
+        // The claim this table makes: no assigned code falls through. 0x15-0x17
+        // are Reserved rather than memory types, so they are the exception.
+        for code in 0x01..=0x24u32 {
+            let decoded = smbios_memory_type(code);
+            if (0x15..=0x17).contains(&code) {
+                assert_eq!(decoded, format!("Unknown (type {code:#04X})"));
+            } else {
+                assert!(
+                    !decoded.starts_with("Unknown (type"),
+                    "assigned code {code:#04X} fell through to the unknown path"
+                );
+            }
+        }
     }
 
     #[test]
-    fn zen_five_is_split_by_model_instead_of_all_reporting_granite_ridge() {
-        // The bug this fixes: `(0x1a, _)` labelled every Zen 5 part with the
-        // desktop codename, so a Strix Point laptop and a Turin server both
-        // claimed to be a Granite Ridge desktop.
-        assert_eq!(codename_for("AuthenticAMD", 0x1a, 0x44), "Granite Ridge (Zen 5)");
-        assert_eq!(codename_for("AuthenticAMD", 0x1a, 0x24), "Strix Point (Zen 5)");
-        assert_eq!(codename_for("AuthenticAMD", 0x1a, 0x02), "Turin (Zen 5)");
+    fn an_unassigned_code_reports_the_raw_value_instead_of_guessing() {
+        // 0x25 is past the last code DMTF has assigned. Showing the number is
+        // what lets someone look it up.
+        assert_eq!(smbios_memory_type(0x25), "Unknown (type 0x25)");
+        assert_eq!(smbios_memory_type(0xFF), "Unknown (type 0xFF)");
     }
 
     #[test]
-    fn an_unknown_model_falls_back_to_a_generation_that_is_still_true() {
-        // A part released after this table was written must degrade to a
-        // correct generation, never to a wrong codename and never to blank.
-        assert_eq!(codename_for("AuthenticAMD", 0x1a, 0xF0), "Zen 5");
-        assert_eq!(codename_for("AuthenticAMD", 0x19, 0xF0), "Zen 3/Zen 4");
-        assert_eq!(codename_for("AuthenticAMD", 0x17, 0xF0), "Zen/Zen+/Zen 2");
-        // Not "Intel Core": family 6 carries Atom parts too, so that would
-        // be a wrong brand rather than a cautious one.
-        assert_eq!(codename_for("GenuineIntel", 0x6, 0xFE), "Intel (family 6h)");
+    fn smbios_other_and_unknown_are_both_reported_as_unknown() {
+        assert_eq!(smbios_memory_type(0x01), "Unknown");
+        assert_eq!(smbios_memory_type(0x02), "Unknown");
     }
 
     #[test]
-    fn first_generation_ryzen_is_no_longer_labelled_zen_2() {
-        // `(0x17, _) => "Matisse/Renoir (Zen 2)"` called Summit Ridge a Zen 2
-        // part. Family 17h spans Zen through Zen 2.
-        assert_eq!(codename_for("AuthenticAMD", 0x17, 0x01), "Summit Ridge/Naples (Zen)");
-    }
-
-    #[test]
-    fn zen_three_and_zen_four_share_family_nineteen() {
-        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x21), "Vermeer (Zen 3)");
-        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x50), "Cezanne (Zen 3)");
-        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x44), "Rembrandt (Zen 3+)");
-        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x61), "Raphael (Zen 4)");
-        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x74), "Phoenix (Zen 4)");
-        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x01), "Milan (Zen 3)");
-    }
-
-    #[test]
-    fn a_non_x86_vendor_string_says_nothing_rather_than_guessing() {
-        assert_eq!(codename_for("Apple", 0x0, 0x0), "");
-        assert_eq!(codename_for("Qualcomm", 0x0, 0x0), "");
-        assert_eq!(codename_for("", 0x6, 0x97), "");
+    fn the_sdram_suffix_is_only_added_where_it_means_something() {
+        assert_eq!(memory_type_label("DDR5"), "DDR5 SDRAM");
+        assert_eq!(memory_type_label("LPDDR5"), "LPDDR5 SDRAM");
+        // These are the ones that used to produce nonsense.
+        assert_eq!(memory_type_label("HBM3"), "HBM3");
+        assert_eq!(memory_type_label("Unknown"), "Unknown");
+        assert_eq!(memory_type_label("Unknown (type 0x25)"), "Unknown (type 0x25)");
+        assert_eq!(memory_type_label(""), "");
     }
 }
