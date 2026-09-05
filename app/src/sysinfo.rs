@@ -143,9 +143,14 @@ fn amd_codename(family: u32, model: u32) -> &'static str {
 }
 
 /// Intel. Family 6 carried everything from the Pentium Pro to Panther Lake, so
-/// the model is what identifies a part; Nova Lake (18h) and Diamond Rapids
-/// (19h) are the first to move off it, which is why this matches on the family
+/// the model is what identifies a part; Nova Lake (12h) and Diamond Rapids
+/// (13h) are the first to move off it, which is why this matches on the family
 /// rather than assuming 6.
+///
+/// `intel-family.h` writes those two families in decimal — `IFM(18, ...)` and
+/// `IFM(19, ...)` — which are 12h and 13h. Families here are hex throughout,
+/// as the arms below are, so that they read consistently against the AMD
+/// table, where 19h means something else entirely (Zen 3/Zen 4).
 fn intel_codename(family: u32, model: u32) -> &'static str {
     match (family, model) {
         // --- Families 12h and 13h: the move off family 6 -------------------
