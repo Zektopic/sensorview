@@ -1,0 +1,21 @@
+# Normalise line endings in the tree the CI actually builds.
+#
+# Five of the Rust sources were committed with CRLF and the other fifty with
+# LF. Git then reported a whole-file rewrite whenever one of the five was
+# touched from a checkout with different `core.autocrlf` settings — a 941-line
+# diff on `firmware.rs` that was nine real lines. That noise is what hid the
+# reverted CPU codename tables in 6b59f28: the real deletion was indistinguish-
+# able from the line-ending churn around it.
+#
+# `text eol=lf` stores and checks out LF regardless of the contributor's
+# `core.autocrlf`, so a diff means a change from here on.
+*.rs   text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
+
+# The C# tree predates this and is reference material the build never touches;
+# leaving it alone keeps the normalisation commit reviewable.
+*.cs      -text
+*.csproj  -text
+*.sln     -text
