@@ -101,8 +101,17 @@ fn codename_for(vendor: &str, family: u32, model: u32) -> String {
     }
 }
 
-/// AMD, keyed on family then model's high nibble — the grouping AMD itself
-/// uses to separate parts within a family.
+/// AMD, keyed on family and model, from libcpuid's `recog_amd.c`.
+///
+/// Models libcpuid names individually are matched individually. A high-nibble
+/// *range* is used only where AMD ships a block of parts under one codename
+/// (Vermeer, Cezanne, Raphael and so on) and no other part is known to sit
+/// inside it.
+///
+/// That distinction is load-bearing. Each of these families packs a wholly
+/// different part at model 08h — Colfax, Chagall, Shimada Peak, all
+/// Threadrippers — so a `0x00..=0x0f` range written around the model 01h/02h
+/// server part silently renames it. See `a_threadripper_is_not_an_epyc`.
 ///
 /// Every family arm ends in a catch-all naming only the *generation*, which is
 /// safe because AMD does not mix generations within these families: 17h is
@@ -112,17 +121,22 @@ fn codename_for(vendor: &str, family: u32, model: u32) -> String {
 fn amd_codename(family: u32, model: u32) -> &'static str {
     match (family, model) {
         // --- Zen 5, family 1Ah ---------------------------------------------
-        // libcpuid: family 26 model 2 (Turin), 36/0x24 (Strix Point),
-        // 68/0x44 (Granite Ridge).
-        (0x1a, 0x00..=0x0f) => "Turin (Zen 5)",
+        // libcpuid: family 26 models 2 (Turin), 8 (Shimada Peak),
+        // 36/0x24 (Strix Point), 68/0x44 (Granite Ridge).
+        (0x1a, 0x02) => "Turin (Zen 5)",
+        (0x1a, 0x08) => "Shimada Peak (Zen 5)",
         (0x1a, 0x20..=0x2f) => "Strix Point (Zen 5)",
         (0x1a, 0x40..=0x4f) => "Granite Ridge (Zen 5)",
         (0x1a, _) => "Zen 5",
 
         // --- Zen 3, Zen 3+ and Zen 4 all share family 19h ------------------
-        // libcpuid: family 25 models 1 (Milan), 33/0x21 (Vermeer),
-        // 68/0x44 (Rembrandt), 80/0x50 (Cezanne), 116/0x74 (Phoenix).
-        (0x19, 0x00..=0x0f) => "Milan (Zen 3)",
+        // libcpuid: family 25 models 1 (Milan), 8 (Chagall), 17/0x11 (Genoa),
+        // 24/0x18 (Storm Peak), 33/0x21 (Vermeer), 68/0x44 (Rembrandt),
+        // 80/0x50 (Cezanne), 116/0x74 (Phoenix).
+        (0x19, 0x01) => "Milan (Zen 3)",
+        (0x19, 0x08) => "Chagall (Zen 3)",
+        (0x19, 0x11) => "Genoa (Zen 4)",
+        (0x19, 0x18) => "Storm Peak (Zen 4)",
         (0x19, 0x20..=0x2f) => "Vermeer (Zen 3)",
         (0x19, 0x40..=0x4f) => "Rembrandt (Zen 3+)",
         (0x19, 0x50..=0x5f) => "Cezanne (Zen 3)",
@@ -131,11 +145,22 @@ fn amd_codename(family: u32, model: u32) -> &'static str {
         (0x19, _) => "Zen 3/Zen 4",
 
         // --- Zen, Zen+ and Zen 2 share family 17h --------------------------
-        // libcpuid: family 23 model 1 (Naples / Whitehaven / Summit Ridge).
-        // The rest of 17h is deliberately generic — this used to claim
-        // "Matisse/Renoir (Zen 2)" for the whole family, which mislabelled
-        // every first-generation Ryzen as a Zen 2 part.
-        (0x17, 0x00..=0x0f) => "Summit Ridge/Naples (Zen)",
+        // libcpuid: family 23 models 1 (Naples / Whitehaven / Summit Ridge),
+        // 8 (Colfax / Pinnacle Ridge), 17/0x11 (Raven Ridge),
+        // 24/0x18 (Picasso), 49/0x31 (Rome), 96/0x60 (Renoir),
+        // 113/0x71 (Matisse).
+        //
+        // The catch-all is deliberately generic. It used to read
+        // "Matisse/Renoir (Zen 2)" for the *whole* family, which mislabelled
+        // every first-generation Ryzen as a Zen 2 part; the named arms below
+        // give Matisse and Renoir back their own entries without that cost.
+        (0x17, 0x01) => "Summit Ridge/Naples (Zen)",
+        (0x17, 0x08) => "Pinnacle Ridge/Colfax (Zen+)",
+        (0x17, 0x11) => "Raven Ridge (Zen)",
+        (0x17, 0x18) => "Picasso (Zen+)",
+        (0x17, 0x31) => "Rome (Zen 2)",
+        (0x17, 0x60) => "Renoir (Zen 2)",
+        (0x17, 0x71) => "Matisse (Zen 2)",
         (0x17, _) => "Zen/Zen+/Zen 2",
 
         _ => "",
@@ -204,8 +229,11 @@ fn intel_codename(family: u32, model: u32) -> &'static str {
         (0x6, 0x4C) => "Cherry Trail (Airmont)",
         (0x6, 0x75) => "Lightning Mountain (Airmont)",
         (0x6, 0x37 | 0x4A | 0x4D | 0x5A) => "Silvermont",
-        (0x6, 0x35 | 0x36) => "Saltwell",
-        (0x6, 0x1C | 0x26 | 0x27) => "Bonnell",
+        // 0x27 is SALTWELL_MID in `intel-family.h`, not Bonnell: the header
+        // has BONNELL 0x1C and BONNELL_MID 0x26, then SALTWELL_MID 0x27
+        // alongside SALTWELL_TABLET 0x35 and SALTWELL 0x36.
+        (0x6, 0x27 | 0x35 | 0x36) => "Saltwell",
+        (0x6, 0x1C | 0x26) => "Bonnell",
         (0x6, 0x57) => "Knights Landing",
         (0x6, 0x85) => "Knights Mill",
 
@@ -1212,5 +1240,68 @@ mod tests {
         assert_eq!(codename_for("GenuineIntel", 0x6, 0xE5), "Panther Lake (Cougar Cove/Darkmont)");
         assert_eq!(codename_for("GenuineIntel", 0x12, 0x03), "Nova Lake (Coyote Cove/Arctic Wolf)");
         assert_eq!(codename_for("GenuineIntel", 0x13, 0x01), "Diamond Rapids (Panther Cove)");
+    }
+
+    #[test]
+    fn a_threadripper_is_not_an_epyc() {
+        // Each of these three families ships a Threadripper at model 08h,
+        // right next to the server part at model 01h/02h. Writing the server
+        // part's arm as the range `0x00..=0x0f` swallowed all three, so a
+        // 2990WX reported Naples, a 5995WX reported Milan, and a 9995WX
+        // reported Turin — three EPYC codenames on three desktop machines.
+        //
+        // libcpuid, the source this table already cited, names every one of
+        // them separately.
+        assert_eq!(codename_for("AuthenticAMD", 0x17, 0x08), "Pinnacle Ridge/Colfax (Zen+)");
+        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x08), "Chagall (Zen 3)");
+        assert_eq!(codename_for("AuthenticAMD", 0x1a, 0x08), "Shimada Peak (Zen 5)");
+
+        // The server parts they used to be confused with still resolve.
+        assert_eq!(codename_for("AuthenticAMD", 0x17, 0x01), "Summit Ridge/Naples (Zen)");
+        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x01), "Milan (Zen 3)");
+        assert_eq!(codename_for("AuthenticAMD", 0x1a, 0x02), "Turin (Zen 5)");
+    }
+
+    #[test]
+    fn a_ryzen_2700x_reports_zen_plus_rather_than_zen() {
+        // CPUID 00800F82 -> family 17h, model 08h. The generation was wrong
+        // too, not just the codename: Pinnacle Ridge is Zen+, and the old
+        // range labelled it "Summit Ridge/Naples (Zen)".
+        let (family, model) = (0x17, 0x08);
+        let name = codename_for("AuthenticAMD", family, model);
+        assert!(name.contains("Zen+"), "{name} should name the Zen+ generation");
+        assert!(!name.contains("Naples"), "{name} should not name a server part");
+    }
+
+    #[test]
+    fn family_seventeen_names_the_parts_libcpuid_names() {
+        // 17h spans Zen, Zen+ and Zen 2. Every model libcpuid's `recog_amd.c`
+        // names individually is named here; anything else degrades to the
+        // generation span, which stays true for the whole family.
+        assert_eq!(codename_for("AuthenticAMD", 0x17, 0x11), "Raven Ridge (Zen)");
+        assert_eq!(codename_for("AuthenticAMD", 0x17, 0x18), "Picasso (Zen+)");
+        assert_eq!(codename_for("AuthenticAMD", 0x17, 0x31), "Rome (Zen 2)");
+        assert_eq!(codename_for("AuthenticAMD", 0x17, 0x60), "Renoir (Zen 2)");
+        assert_eq!(codename_for("AuthenticAMD", 0x17, 0x71), "Matisse (Zen 2)");
+        assert_eq!(codename_for("AuthenticAMD", 0x17, 0xF0), "Zen/Zen+/Zen 2");
+    }
+
+    #[test]
+    fn family_nineteen_separates_genoa_and_storm_peak_from_the_zen_three_parts() {
+        // Both are Zen 4 on a family that is otherwise mostly Zen 3; they used
+        // to fall to the "Zen 3/Zen 4" catch-all, which was true but vague.
+        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x11), "Genoa (Zen 4)");
+        assert_eq!(codename_for("AuthenticAMD", 0x19, 0x18), "Storm Peak (Zen 4)");
+    }
+
+    #[test]
+    fn saltwell_mid_is_not_bonnell() {
+        // `intel-family.h` has BONNELL 0x1C and BONNELL_MID 0x26, then
+        // SALTWELL_MID 0x27 — 0x27 was grouped with Bonnell here.
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0x27), "Saltwell");
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0x35), "Saltwell");
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0x36), "Saltwell");
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0x1C), "Bonnell");
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0x26), "Bonnell");
     }
 }
