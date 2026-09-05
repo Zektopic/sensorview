@@ -72,7 +72,8 @@ app/
     │   ├── mod.rs        # SensorSource trait, Diagnostics, default_source()
     │   ├── lhm_bridge.rs # spawn/parse the .NET sidecar (Windows)
     │   └── demo.rs       # synthetic data — driverless fallback / CI / non-Windows
-    ├── sysinfo.rs        # WMI static info, CPUID, is_elevated()  (~427 lines)
+    ├── sysinfo.rs        # per-platform static info, CPUID decode, SMBIOS memory
+    │                    # types, is_elevated()  (~1300 lines)
     ├── settings.rs       # AppSettings (JSON in %APPDATA%\SensorView\settings.json)
     ├── logging.rs        # CsvLogger
     ├── report.rs         # write_report() → SensorView_Report_<stamp>.txt
@@ -190,7 +191,7 @@ stats, history, graph windows, and CSV columns.
 | --- | --- | --- |
 | **Main** | `main_window.rs` | Toolbar (Summary / Save Report / Sensors / Memory / About / Settings), left device tree with painted icons (`Computer, Central Processor(s), Motherboard, Memory, Video Adapter, Drives, Network`), right "Feature" detail pane fed by `sysinfo`, machine-name status bar |
 | **Sensors Status** | `sensors_window.rs` | HWiNFO flow-column dense sensor table: grouped bands, Current/Min/Max/Average columns, type-colored values, collapsible groups, right-click → Show Graph, CSV logging toggle, uptime clock, **diagnostic banners** |
-| **System Summary** | `summary_window.rs` | CPU / motherboard / memory-module / GPU / drive panels from WMI + CPUID |
+| **System Summary** | `summary_window.rs` | CPU / motherboard / memory-module / GPU / drive panels from WMI + CPUID. The CPU panel prints the raw CPUID signature *and* the decoded microarchitecture codename (`sysinfo::codename_for`); memory modules print the decoded SMBIOS type-17 code (`sysinfo::smbios_memory_type`), so LPDDR parts name themselves instead of collapsing to "DRAM" |
 | **Settings** | `settings_dialog.rs` | 5 tabs: *General / User Interface* (live), *Safety* (stub), *SMBus / I2C* (stub), *Driver Management* (live — shows real ring0 report + elevation), *License Management* (stub) |
 | **Graph** (n instances) | `graph_window.rs` | One deferred viewport per sensor identifier in `Shared.graphs`; hand-painted autoscaled polyline (no plotting dependency) |
 
