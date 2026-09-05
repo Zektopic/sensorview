@@ -1134,4 +1134,78 @@ mod tests {
         assert_eq!(codename_for("Qualcomm", 0x0, 0x0), "");
         assert_eq!(codename_for("", 0x6, 0x97), "");
     }
+
+    // --- Cross-check against upstream OpenHardwareMonitor PR #1671 ---------
+    //
+    // "New Intel Architectures" (Leckrosh, Jul 2026) is the only open upstream
+    // PR that overlaps this table. It cannot be merged — the C# tree it edits
+    // is reference material this build never compiles — so it was treated as a
+    // second opinion on the model numbers instead, and checked model by model.
+    //
+    // Every architecture it adds was already covered here. Two of its model
+    // numbers were *not* adopted, which is the part worth pinning: 0xAB
+    // (claimed Meteor Lake) and 0xBC (claimed Lunar Lake) appear in neither
+    // the Linux kernel's `arch/x86/include/asm/intel-family.h` nor
+    // LibreHardwareMonitor's `IntelCpu.cs` — the engine that actually reads
+    // sensors on Windows here. Two independent sources having no such models,
+    // and the PR citing none, is not enough to name a part.
+    //
+    // They are not special-cased. They fall to the family arm and report
+    // "Intel (family 6h)", which is the correct answer for a model nobody can
+    // source: honest rather than wrong.
+
+    #[test]
+    fn every_model_upstream_pr_1671_adds_is_already_covered() {
+        for (model, expected) in [
+            (0x97, "Alder Lake (Golden Cove/Gracemont)"),
+            (0x9A, "Alder Lake (Golden Cove/Gracemont)"),
+            (0xA7, "Rocket Lake (Cypress Cove)"),
+            (0xB7, "Raptor Lake (Raptor Cove/Gracemont)"),
+            (0xBA, "Raptor Lake (Raptor Cove/Gracemont)"),
+            (0xBF, "Raptor Lake (Raptor Cove/Gracemont)"),
+            (0xAA, "Meteor Lake (Redwood Cove/Crestmont)"),
+            (0xAC, "Meteor Lake (Redwood Cove/Crestmont)"),
+            (0xB5, "Arrow Lake (Lion Cove/Skymont)"),
+            (0xC5, "Arrow Lake (Lion Cove/Skymont)"),
+            (0xC6, "Arrow Lake (Lion Cove/Skymont)"),
+            (0xBD, "Lunar Lake (Lion Cove/Skymont)"),
+            (0xCC, "Panther Lake (Cougar Cove/Darkmont)"),
+        ] {
+            assert_eq!(
+                codename_for("GenuineIntel", 0x6, model),
+                expected,
+                "model {model:#04X} from upstream PR #1671",
+            );
+        }
+    }
+
+    #[test]
+    fn unsourced_models_report_the_family_rather_than_a_guessed_part() {
+        // Upstream PR #1671 assigns these; no primary source does. If a
+        // future kernel header or LHM release adds either, this test is the
+        // thing that should fail and prompt naming them properly.
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0xAB), "Intel (family 6h)");
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0xBC), "Intel (family 6h)");
+    }
+
+    #[test]
+    fn alder_lake_n_is_not_folded_into_raptor_lake() {
+        // Upstream PR #1671 groups 0xBE with Raptor Lake. Both
+        // `intel-family.h` (INTEL_ALDERLAKE_N) and LibreHardwareMonitor call
+        // it Alder Lake-N, so the PR is the outlier and was not followed.
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0xBE), "Alder Lake-N (Gracemont)");
+    }
+
+    #[test]
+    fn parts_no_upstream_source_covers_yet_are_still_named() {
+        // Bartlett Lake, Clearwater Forest, Wildcat Lake, Panther Lake-R,
+        // Nova Lake and Diamond Rapids are absent from both upstream OHM and
+        // LibreHardwareMonitor's tables; `intel-family.h` carries all six.
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0xD7), "Bartlett Lake (Raptor Cove)");
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0xDD), "Clearwater Forest (Darkmont)");
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0xD5), "Wildcat Lake");
+        assert_eq!(codename_for("GenuineIntel", 0x6, 0xE5), "Panther Lake (Cougar Cove/Darkmont)");
+        assert_eq!(codename_for("GenuineIntel", 0x12, 0x03), "Nova Lake (Coyote Cove/Arctic Wolf)");
+        assert_eq!(codename_for("GenuineIntel", 0x13, 0x01), "Diamond Rapids (Panther Cove)");
+    }
 }
