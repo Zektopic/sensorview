@@ -167,6 +167,16 @@ missed:
   process down.
 - **`settings.val_col_width`** is declared, persisted and never read.
 
+- **`cpuid_info` applies ExtendedModel unconditionally** (`app/src/sysinfo.rs:49`).
+  Both the Intel SDM and the AMD APM say the ExtendedModel field is only to be
+  folded into the model number when the *base* family is 6h or Fh; the code does
+  `(ext_model << 4) | base_model` for every family. It is benign today, because
+  every family the codename table names has base family 6 or Fh, so the computed
+  model is the correct one in each case. It would start lying if a vendor
+  shipped a part on some other base family with a non-zero ExtendedModel. The
+  fix is a one-line guard; it was deliberately left out of the codename restore
+  so that a bug-fix PR stayed a restore.
+
 ## Release
 
 - **`release.yml` has never completed successfully.** The last manual run failed

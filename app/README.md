@@ -49,6 +49,26 @@ The data model mirrors OpenHardwareMonitor's `Hardware/ISensor.cs` and
 `Hardware/IHardware.cs`, so the C# reference in the repository root and this port
 share a vocabulary.
 
+## Adding a CPU codename
+
+`sysinfo.rs` decodes the CPUID signature into a microarchitecture name. Two
+rules keep that table honest, and both are enforced by tests:
+
+1. **Cite the source in the comment.** Intel entries come from
+   `arch/x86/include/asm/intel-family.h`, AMD entries from libcpuid's
+   `recog_amd.c`. If neither names the part, do not invent a codename — extend
+   the family's catch-all arm, which reports only the generation.
+2. **Match a single model unless a whole block really is one part.** A
+   `0x00..=0x0f` range written around one sourced model silently swallows its
+   neighbours. AMD families 17h, 19h and 1Ah each ship a Threadripper at model
+   `08h` right beside the server part at `01h`/`02h`; three such ranges had all
+   three Threadrippers reporting an EPYC codename. See the
+   `a_threadripper_is_not_an_epyc` test.
+
+`intel-family.h` writes its family numbers in **decimal**. Family 18 in that
+header is 12h, not 18h — and 19h is AMD's Zen 3/Zen 4 family, so the mistake
+reads as a real entry.
+
 ## Checks
 
 These are exactly what CI runs:
