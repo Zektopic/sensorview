@@ -57,6 +57,17 @@ for every tool on that platform.
 WebSocket feed and Prometheus exporter are part of the normal build. Bind it to
 loopback for local scripting or to your LAN for a headless box.
 
+**The CPU names itself, even when the part is new.** On x86 the System Summary
+decodes the CPUID signature into a microarchitecture codename — *Raphael (Zen
+4)*, *Arrow Lake*, *Granite Ridge (Zen 5)* — and every entry in that table is
+traceable to a primary source: Intel's `arch/x86/include/asm/intel-family.h` and
+libcpuid's `recog_amd.c`. That reaches parts the sensor library underneath
+cannot name: LibreHardwareMonitor's own CPU table matches only families 06h and
+0Fh, so Intel's newest families — Nova Lake (12h) and Diamond Rapids (13h) —
+are structurally unreachable for it, and several family-6 parts sit past the end
+of its model list. Where no source names a specific part, SensorView prints the
+*generation* it can prove instead of inventing a codename.
+
 **Honest blanks.** Where a value genuinely isn't available on a platform — CPUID
 on ARM, ACPI tables on Apple Silicon, S.M.A.R.T. behind Apple's storage
 controller — the field renders `—` rather than a plausible-looking guess.
@@ -69,7 +80,10 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - Dense, sortable **Sensors Status** table with current / min / max / average
   columns, per-type icons, draggable column widths and font zoom
 - Per-sensor **history graphs** in their own windows
-- **System Summary** — CPU, motherboard, memory, GPU, drives, OS, ISA feature grid
+- **System Summary** — CPU (CPUID signature and microarchitecture codename on
+  x86), motherboard, memory modules with their real SMBIOS type — LPDDR4 and
+  LPDDR5 read as themselves, not as a generic "DRAM" — GPU, drives, OS and
+  the ISA feature grid
 - **Hex Viewer** for raw firmware blobs (ACPI/SMBIOS on Windows and Linux)
 - Configurable poll interval, min/max reset, light/dark/grey themes
 
