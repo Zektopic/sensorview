@@ -1,8 +1,10 @@
 //! Die temperatures via the `IOHIDEventSystemClient` sensor plane.
 //!
-//! This is how Apple Silicon exposes thermals. There is no `AppleSMC` service
-//! on M-series machines (verified: `ioreg -n AppleSMC` returns nothing on M5),
-//! so the SMC key protocol that works on Intel Macs is not an option here.
+//! This is how Apple Silicon exposes per-probe thermals, under the firmware's
+//! own sensor names. The SMC (see `smc.rs`) reports the same dies again under
+//! four-character keys whose meaning changes with every chip; this plane is
+//! the one that names its sensors, so it supplies the per-probe list and the
+//! SMC only adds CPU/GPU aggregates on top.
 //!
 //! Sensors live as HID services on Apple's vendor usage page (0xFF00) and are
 //! read by asking each service for a temperature event. Their names are

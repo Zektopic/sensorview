@@ -54,6 +54,7 @@ mod procs;
 mod report;
 mod runtime;
 mod settings;
+mod smbios;
 mod source;
 mod state;
 mod sysinfo;

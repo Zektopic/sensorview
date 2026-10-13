@@ -48,9 +48,9 @@ single `SensorSource` trait, so the Windows, macOS and Linux backends are
 interchangeable and the UI, web tier, logger and graphs never branch on platform.
 Adding a backend is one trait impl and one line in a factory.
 
-**No kernel driver on macOS.** Apple Silicon sensors are read entirely through
-IOKit as an ordinary user — no helper daemon, no signed kext, no privilege
-prompt. On Windows, full sensor access still requires a Ring-0 driver, as it does
+**No kernel driver on macOS.** Mac sensors — Apple Silicon and Intel — are read
+entirely through IOKit as an ordinary user — no helper daemon, no signed kext, no
+privilege prompt. On Windows, full sensor access still requires a Ring-0 driver, as it does
 for every tool on that platform.
 
 **Remote monitoring is not a paid tier.** The embedded HTTP server, live
@@ -69,7 +69,8 @@ controller — the field renders `—` rather than a plausible-looking guess.
 - Dense, sortable **Sensors Status** table with current / min / max / average
   columns, per-type icons, draggable column widths and font zoom
 - Per-sensor **history graphs** in their own windows
-- **System Summary** — CPU, motherboard, memory, GPU, drives, OS, ISA feature grid
+- **System Summary** — CPU, motherboard, memory, GPU, displays, drives, battery
+  health, OS and boot security, ISA feature grid
 - **Hex Viewer** for raw firmware blobs (ACPI/SMBIOS on Windows and Linux)
 - Configurable poll interval, min/max reset, light/dark/grey themes
 
@@ -204,22 +205,22 @@ every combination that ships.
 
 ## Platform support
 
-| | Windows | macOS (Apple Silicon) | Linux |
-|---|---|---|---|
-| Backend | LibreHardwareMonitor sidecar | native IOKit | native sysfs / procfs |
-| Temperatures | ✅ | ✅ | ✅ hwmon |
-| Per-core CPU load | ✅ | ✅ | ✅ procfs |
-| Power | ✅ | ✅ | ✅ hwmon |
-| Voltages | ✅ | ✅ (core VID) | ✅ hwmon |
-| Clocks | ✅ | ✅ | ✅ cpufreq |
-| Fan speeds | ✅ | —¹ | ✅ hwmon |
-| Load / memory | ✅ | ✅ | ✅ procfs |
-| GPU | ✅ | ✅ | ✅ utilisation on amdgpu; temp/fan on i915/nouveau |
-| Storage | ✅ throughput | ✅ throughput | ✅ throughput + temp |
-| Network | ✅ | — | ✅ procfs |
-| Battery | ✅ | ✅ | — |
-| Firmware tables | ACPI + SMBIOS | —² | ACPI |
-| Needs elevation | **yes** (Ring-0 driver) | **no** | no (ACPI tables need root) |
+| | Windows | macOS (Apple Silicon) | macOS (Intel)³ | Linux |
+|---|---|---|---|---|
+| Backend | LibreHardwareMonitor sidecar | native IOKit + SMC | native IOKit + SMC | native sysfs / procfs |
+| Temperatures | ✅ | ✅ per-probe + CPU/GPU die | ✅ SMC | ✅ hwmon |
+| Per-core CPU load | ✅ | ✅ | ✅ | ✅ procfs |
+| Power | ✅ | ✅ per-rail + system total | ✅ package + system total | ✅ hwmon |
+| Voltages | ✅ | ✅ (core VID, DC in) | ✅ SMC | ✅ hwmon |
+| Clocks | ✅ | ✅ | —⁴ | ✅ cpufreq |
+| Fan speeds | ✅ | ✅¹ | ✅ | ✅ hwmon |
+| Load / memory | ✅ | ✅ | ✅ | ✅ procfs |
+| GPU | ✅ | ✅ | ✅ per GPU (iGPU + discrete) | ✅ utilisation on amdgpu; temp/fan on i915/nouveau |
+| Storage | ✅ throughput | ✅ throughput | ✅ throughput | ✅ throughput + temp |
+| Network | ✅ | — | — | ✅ procfs |
+| Battery | ✅ | ✅ | ✅ | — |
+| Firmware tables | ACPI + SMBIOS | —² | SMBIOS | ACPI |
+| Needs elevation | **yes** (Ring-0 driver) | **no** | **no** | no (ACPI tables need root) |
 
 Linux reads per-core CPU from `/proc/stat`, disk throughput from
 `/proc/diskstats`, network from `/proc/net/dev` and GPU utilisation from
@@ -228,14 +229,16 @@ kernel already provides. Temperatures, fans and voltages come from whatever
 `hwmon` drivers are loaded (`coretemp`, `k10temp`, `amdgpu`, `nct6775`,
 `drivetemp`).
 
-¹ Not implemented. Fans would come from the same HID sensor plane as
-temperatures (a different usage page), but development happened on a fanless
-MacBook Air where there was nothing to read or verify against.
+¹ Read from the SMC (`F0Ac`, `F0Tg`, …). Development happened on a fanless
+MacBook Air, so the fan path is covered by decoder unit tests rather than by a
+live fan.
 ² Apple Silicon has no ACPI or SMBIOS; the firmware uses an ARM device tree.
-
-Intel Macs are **not** supported. They would need a completely different
-`AppleSMC` backend, which does not exist on M-series hardware and could not be
-tested during development.
+³ Intel Macs are built and tested in CI on GitHub's `macos-15-intel` runners,
+which are virtual machines — so the Intel sensor paths compile, unit-test and
+run there, but have not been checked against a physical Intel Mac's readings.
+Apple Silicon is the primary platform.
+⁴ Intel exposes no unprivileged per-core frequency; the Summary shows the
+nominal clock.
 
 ---
 
@@ -247,7 +250,8 @@ Download the installer for your platform from [Releases](https://github.com/Zekt
 |---|---|---|
 | Windows | `SensorView_<ver>_x64-setup.exe` (NSIS) | Bundles the sensor sidecar; optionally installs the PawnIO driver |
 | Windows | `SensorView-<ver>-portable.exe` | One file, no install — see below |
-| macOS | `SensorView_<ver>_aarch64.dmg` | Apple Silicon only; **unsigned** — see below |
+| macOS (Apple Silicon) | `SensorView_<ver>_aarch64.dmg` | **unsigned** — see below |
+| macOS (Intel) | `SensorView_<ver>_x64.dmg` | **unsigned** — see below |
 | Linux (x86-64) | `.deb` / `.AppImage` | |
 | Linux (arm64) | `_arm64.deb` | Raspberry Pi 5, Ampere/Graviton, Snapdragon X — see below |
 
@@ -389,17 +393,29 @@ per tick. Keeping LHM out-of-process means a driver fault takes down the sidecar
 not the UI. Static system info comes from WMI in-process; ACPI/SMBIOS come from
 `EnumSystemFirmwareTables`, which needs no driver at all.
 
-**macOS (Apple Silicon)** reads everything in-process through IOKit:
+**macOS** reads everything in-process through IOKit. Whether a machine is Apple
+Silicon or Intel is decided at runtime (`hw.optional.arm64`), not by the build
+target, so an x86_64 build running under Rosetta still takes the Apple Silicon
+paths:
 
-| Data | Mechanism |
-|---|---|
-| Die temperatures | `IOHIDEventSystemClient` sensor plane (private) |
-| CPU/GPU/ANE/DRAM power | `libIOReport` "Energy Model" (private, `dlopen`ed) |
-| CPU/GPU clocks + VID | IOReport DVFS residency × `pmgr` `voltage-states` |
-| CPU load, memory | Mach `host_processor_info` / `host_statistics64` |
-| GPU load, memory | `IOAccelerator` `PerformanceStatistics` |
-| SSD throughput | `IOBlockStorageDriver` statistics |
-| Battery | `AppleSmartBattery` |
+| Data | Mechanism | Apple Silicon | Intel |
+|---|---|---|---|
+| Per-probe die temperatures | `IOHIDEventSystemClient` sensor plane (private) | ✅ | few |
+| CPU/GPU die (avg + hottest), fans, system total and DC-in power | `AppleSMC` user client | ✅ | ✅ plus named CPU/GPU/board temps, package power, voltages |
+| CPU/GPU/ANE/DRAM power | `libIOReport` "Energy Model" (private, `dlopen`ed) | ✅ | — |
+| CPU/GPU clocks + VID | IOReport DVFS residency × `pmgr` `voltage-states` | ✅ | — |
+| CPU load, memory | Mach `host_processor_info` / `host_statistics64` | ✅ | ✅ |
+| GPU load, memory | `IOAccelerator` `PerformanceStatistics`, one node per GPU | ✅ | ✅ |
+| Disk throughput | `IOBlockStorageDriver` statistics | ✅ | ✅ |
+| Battery | `AppleSmartBattery` | ✅ | ✅ |
+
+The **System Summary** on a Mac also shows the memory technology and vendor
+(`/chosen` `dram-type`/`dram-vendor`, e.g. LPDDR5 / Samsung), the SoC part
+number and board id, Secure Boot and SIP state, every connected display (native
+resolution, "looks like" size, refresh, diagonal), every physical drive
+including external ones, and battery health (capacity vs design, cycles of
+rated cycles, adapter wattage). On Intel Macs, memory modules and firmware
+version/date come from the SMBIOS table `AppleSMBIOS` publishes.
 
 Apple Silicon exposes no "current MHz" register, so clocks are *reconstructed*:
 IOReport gives residency per DVFS state, the `pmgr` device-tree node gives the
@@ -411,8 +427,15 @@ Two of those are private frameworks. Every symbol is resolved at runtime and
 every collector degrades to producing no sensors rather than panicking, because
 the release profile is `panic = "abort"` and a missing symbol must not take down
 the app. This is fine for `.dmg` distribution and notarization, but rules out the
-Mac App Store. `AppleSMC` is deliberately unused — it does not exist on M-series
-Macs.
+Mac App Store.
+
+The SMC exists on M-series Macs too — as `AppleSMCKeysEndpoint`, a subclass of
+`AppleSMC`, which is why `ioreg -n AppleSMC` (an exact name match) shows nothing.
+On Apple Silicon only its `flt`-typed keys are trusted: its integer keys are
+labelled big-endian but are mostly little-endian in practice. Its per-core
+temperature keys are renumbered by every chip, so they are published as CPU/GPU
+die averages and maxima rather than under guessed core names; the per-probe
+detail comes from the HID plane, which names its sensors.
 
 **Linux** reads sysfs and procfs directly, with no daemon and nothing beyond
 what a stock kernel already exposes:
@@ -498,16 +521,19 @@ cargo test -- --ignored --nocapture dump_live_tree
 cargo test -- --ignored --nocapture dump_system_summary
 ```
 
-CI builds and packages on `windows-latest`, `ubuntu-22.04` and `macos-latest`;
-tagged `v*` pushes publish installers to Releases.
+CI builds and packages on `windows-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`,
+`macos-latest` (Apple Silicon) and `macos-15-intel`; tagged `v*` pushes publish
+installers to Releases.
 
 ---
 
 ## Status and known gaps
 
-- macOS fan sensors are **not implemented** — see the platform table footnote.
+- macOS fan readings are untested against a real fan — see the platform table
+  footnote.
 - macOS `.dmg` is unsigned and un-notarized.
-- Intel Macs are unsupported.
+- Intel Macs are tested only on CI virtual machines, not on physical hardware;
+  Intel has no per-core clock sensors.
 - NVMe S.M.A.R.T. health on macOS reports identity only — Apple's controller
   isn't a standard NVMe endpoint, so the health log page is unreachable; those
   fields report `Unknown` rather than a fabricated "Good".

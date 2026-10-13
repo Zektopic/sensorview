@@ -31,9 +31,10 @@ pub fn show(ui: &mut egui::Ui, s: &Shared) {
                 ui.columns(3, |cols| {
                     // ---- CPU ------------------------------------------------
                     cpu_panel(&mut cols[0], &i, tree, &pal);
-                    // ---- Motherboard + Memory ------------------------------
+                    // ---- Motherboard + Memory + Battery --------------------
                     board_memory_panels(&mut cols[1], &i, &pal);
-                    // ---- GPU + OS + Drives ---------------------------------
+                    battery_panel(&mut cols[1], &i, &pal);
+                    // ---- GPU + Displays + OS + Drives ----------------------
                     gpu_os_drives_panels(&mut cols[2], &i, tree, &pal);
                 });
             });
@@ -47,6 +48,8 @@ fn cpu_panel(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree: &[Hardware
             "AMD"
         } else if i.cpu.name.to_uppercase().contains("INTEL") {
             "INTEL"
+        } else if i.cpu.name.starts_with("Apple") {
+            "APPLE"
         } else {
             "CPU"
         };
@@ -75,18 +78,8 @@ fn cpu_panel(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree: &[Hardware
             .map(|c| format!("{c} / {}", i.cpu.threads.unwrap_or(c)))
             .unwrap_or_default();
         info_row(ui, "Cores / Threads:", &cores, pal);
-        info_row(
-            ui,
-            "L2 Cache:",
-            &i.cpu.l2_kb.map(|k| format!("{} KB", k)).unwrap_or_default(),
-            pal,
-        );
-        info_row(
-            ui,
-            "L3 Cache:",
-            &i.cpu.l3_kb.map(|k| format!("{} MB", k / 1024)).unwrap_or_default(),
-            pal,
-        );
+        info_row(ui, "L2 Cache:", &i.cpu.l2_kb.map(crate::format::cache_size).unwrap_or_default(), pal);
+        info_row(ui, "L3 Cache:", &i.cpu.l3_kb.map(crate::format::cache_size).unwrap_or_default(), pal);
         info_row(ui, "Codename:", &i.cpu.codename, pal);
         info_row(ui, "CPUID:", &i.cpu.cpuid, pal);
         info_row(
@@ -94,6 +87,17 @@ fn cpu_panel(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree: &[Hardware
             "Package Power:",
             &cpu_sensor(tree, SensorType::Power, "package")
                 .map(|v| format!("{v:.1} W"))
+                .unwrap_or_default(),
+            pal,
+        );
+        // Windows/Linux name it "Package"; the Mac backend's headline is the
+        // hottest CPU die probe.
+        info_row(
+            ui,
+            "Temperature:",
+            &cpu_sensor(tree, SensorType::Temperature, "package")
+                .or_else(|| cpu_sensor(tree, SensorType::Temperature, "cpu die (hottest)"))
+                .map(|v| format!("{v:.1} °C"))
                 .unwrap_or_default(),
             pal,
         );
@@ -166,7 +170,15 @@ fn board_memory_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, pal: &
                 .strong(),
         );
         ui.add_space(2.0);
-        info_row(ui, "Chipset:", "", pal); // needs PCI enum — native engine
+        if !i.board.model_id.is_empty() {
+            info_row(ui, "Model:", &i.board.model_id, pal);
+        }
+        if !i.board.board_id.is_empty() {
+            info_row(ui, "Board ID:", &i.board.board_id, pal);
+        }
+        // Empty on Windows/Linux until PCI enumeration lands (native engine);
+        // the Apple Silicon SoC is its own chipset and is named.
+        info_row(ui, "Chipset:", &i.board.chipset, pal);
         info_row(ui, "BIOS Version:", &i.board.bios_version, pal);
         info_row(ui, "BIOS Date:", &i.board.bios_date, pal);
     });
@@ -196,11 +208,7 @@ fn board_memory_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, pal: &
         // Unified memory is a wide on-package bus, not a DIMM channel count —
         // inferring "Single-Channel" from the one synthetic module would be
         // plainly wrong.
-        let unified = i
-            .memory_modules
-            .first()
-            .is_some_and(|m| m.memory_type.contains("on-package"));
-        let mode = if unified {
+        let mode = if i.memory_unified {
             "Unified"
         } else {
             match i.memory_modules.len() {
@@ -228,10 +236,14 @@ fn board_memory_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, pal: &
                     );
                     ui.label(
                         RichText::new(format!(
-                            "{:.0} GB {} @ {} MT/s  {}",
+                            "{:.0} GB {}{}  {}",
                             m.capacity_gb,
                             m.memory_type,
-                            m.configured_speed_mts.or(m.speed_mts).unwrap_or(0),
+                            // Unknown speed is left out, not shown as "@ 0".
+                            m.configured_speed_mts
+                                .or(m.speed_mts)
+                                .map(|v| format!(" @ {v} MT/s"))
+                                .unwrap_or_default(),
                             m.voltage_mv
                                 .map(|v| format!("{:.2} V", v as f32 / 1000.0))
                                 .unwrap_or_default(),
@@ -252,6 +264,10 @@ fn gpu_os_drives_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree:
                 "NVIDIA"
             } else if g.name.to_uppercase().contains("AMD") || g.name.to_uppercase().contains("RADEON") {
                 "RADEON"
+            } else if g.name.to_uppercase().contains("INTEL") {
+                "INTEL"
+            } else if g.name.starts_with("Apple") {
+                "APPLE"
             } else {
                 "GPU"
             };
@@ -266,13 +282,16 @@ fn gpu_os_drives_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree:
                 ui.vertical(|ui| {
                     ui.label(RichText::new(&g.name).color(pal.text).size(11.5).strong());
                     // NOTE: WMI AdapterRAM is a u32 capped at 4 GB — showing it
-                    // would be wrong for modern cards. VRAM comes with the
-                    // native GPU engine (NVML/ADL).
-                    ui.label(
-                        RichText::new(format!("Driver {}", g.driver_version))
-                            .color(pal.text_dim)
-                            .size(10.0),
-                    );
+                    // would be wrong for modern cards, so Windows VRAM waits
+                    // for the native GPU engine (NVML/ADL). An Intel Mac's
+                    // registry reports the real figure.
+                    let vram = if cfg!(windows) { None } else { g.vram_gb };
+                    let detail = match (vram, g.driver_version.is_empty()) {
+                        (Some(gb), true) => format!("{gb:.0} GB VRAM"),
+                        (Some(gb), false) => format!("{gb:.0} GB VRAM · Driver {}", g.driver_version),
+                        (None, _) => format!("Driver {}", g.driver_version),
+                    };
+                    ui.label(RichText::new(detail).color(pal.text_dim).size(10.0));
                 });
             });
             if gi + 1 < i.gpus.len() {
@@ -299,6 +318,28 @@ fn gpu_os_drives_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree:
 
     ui.add_space(6.0);
 
+    if !i.displays.is_empty() {
+        panel(ui, "Displays", pal, |ui| {
+            for d in &i.displays {
+                let mut title = d.name.clone();
+                if let Some(inches) = d.diagonal_in {
+                    title.push_str(&format!("  {inches:.1}\""));
+                }
+                ui.label(RichText::new(title).color(pal.text).size(11.0).strong());
+                let mut detail = d.mode_text();
+                if d.built_in {
+                    detail.push_str("  · built-in");
+                }
+                if d.main {
+                    detail.push_str("  · main");
+                }
+                ui.label(RichText::new(detail).color(pal.text_dim).size(10.0));
+                ui.add_space(2.0);
+            }
+        });
+        ui.add_space(6.0);
+    }
+
     panel(ui, "Operating System", pal, |ui| {
         ui.label(
             RichText::new(format!("{} ({})", i.os.caption, i.os.arch))
@@ -308,6 +349,10 @@ fn gpu_os_drives_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree:
         info_row(ui, "Build:", &i.os.build, pal);
         super::widgets::badge(ui, "UEFI Boot:", i.os.uefi_boot, pal);
         super::widgets::badge(ui, "Secure Boot:", i.os.secure_boot, pal);
+        // macOS only; a "—" row on platforms without SIP would be noise.
+        if i.os.sip_enabled.is_some() {
+            super::widgets::badge(ui, "SIP:", i.os.sip_enabled, pal);
+        }
     });
 
     ui.add_space(6.0);
@@ -325,6 +370,27 @@ fn gpu_os_drives_panels(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, tree:
                 .size(10.5),
             );
         }
+    });
+}
+
+fn battery_panel(ui: &mut egui::Ui, i: &crate::sysinfo::SystemInfo, pal: &Palette) {
+    let Some(b) = &i.battery else { return };
+    ui.add_space(6.0);
+    panel(ui, "Battery", pal, |ui| {
+        let capacity = match (b.full_charge_capacity_mah, b.design_capacity_mah) {
+            (Some(full), Some(design)) => format!("{full} / {design} mAh"),
+            _ => String::new(),
+        };
+        info_row(ui, "Full / Design:", &capacity, pal);
+        info_row(ui, "Health:", &b.health_pct.map(|h| format!("{h:.0} %")).unwrap_or_default(), pal);
+        let cycles = match (b.cycle_count, b.design_cycle_count) {
+            (Some(c), Some(d)) => format!("{c} of {d}"),
+            (Some(c), None) => c.to_string(),
+            _ => String::new(),
+        };
+        info_row(ui, "Cycles:", &cycles, pal);
+        info_row(ui, "Charge:", &b.charge_pct.map(|c| format!("{c:.0} %")).unwrap_or_default(), pal);
+        info_row(ui, "Power:", &b.power_source_text(), pal);
     });
 }
 
