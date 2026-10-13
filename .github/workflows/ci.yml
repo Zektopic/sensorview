@@ -1,8 +1,9 @@
 name: CI
 
 # Build-validates the native SensorView app (eframe/egui) on all three target
-# OSes, runs the Rust tests, and uploads the produced installers
-# (.exe, .deb/.AppImage, .dmg) as workflow artifacts.
+# OSes — macOS on both Apple Silicon and Intel — runs the Rust tests, and
+# uploads the produced installers (.exe, .deb/.AppImage, .dmg) as workflow
+# artifacts.
 # Publishing tagged releases is handled by release.yml.
 
 on:
@@ -59,6 +60,18 @@ jobs:
             os: linux
             formats: deb
           - platform: macos-latest
+            os: macos
+            formats: dmg
+          # Intel Macs. The macOS backend picks its Intel paths at runtime
+          # (AppleSMC named keys, SMBIOS memory, PCI GPUs — see
+          # src/source/macos/), so they only run on Intel hardware, and this
+          # is the only leg that has it. A *native* runner rather than a
+          # cross-build from the arm64 leg, for the same `ring` reason as
+          # arm64 Linux above, and because a cross-built binary would never
+          # actually execute those paths. GitHub's Intel macOS runners are
+          # VMs: the live tests treat a missing SMC, battery or GPU as absent
+          # rather than as a failure (see `macos::absent`).
+          - platform: macos-15-intel
             os: macos
             formats: dmg
     runs-on: ${{ matrix.platform }}

@@ -873,11 +873,9 @@ fn query() -> SystemInfo {
     }
     // Fall back to the flat count on any Mac that doesn't publish perflevels.
     let cores = if physical > 0 { Some(physical) } else { sysctl_u64("hw.physicalcpu").map(|v| v as u32) };
-    let socket = if arm {
-        (!cluster_desc.is_empty()).then(|| cluster_desc.join(" + "))
-    } else {
-        sysctl_u64("hw.packages").map(|n| if n == 1 { "1 package".to_string() } else { format!("{n} packages") })
-    };
+    // An Intel Mac's socket designation isn't published (no SMBIOS type 4
+    // socket string on Apple firmware), and a package count is not one.
+    let socket = (arm && !cluster_desc.is_empty()).then(|| cluster_desc.join(" + "));
 
     let total_memory_gb = sysctl_u64("hw.memsize").map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0));
 

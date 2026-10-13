@@ -135,9 +135,17 @@ missed:
 
 ## Platform gaps
 
-- **macOS fan sensors are not implemented.** Fans would come from the same HID
-  sensor plane as temperatures, on a different usage page, but development
-  happened on a fanless MacBook Air with nothing to read or verify against.
+- **macOS fan readings have never been seen live.** Fans are read from the SMC
+  (`FNum`, `F0Ac`, `F0Tg`; `smc.rs`), but development happened on a fanless
+  MacBook Air, so only the decoder is tested. Worth checking on a MacBook Pro
+  or Mac mini against `sudo powermetrics --samplers smc`.
+- **Intel Mac sensors have only run on CI virtual machines.** The Intel paths —
+  the named SMC key table, SMBIOS memory modules, PCI GPU names, the
+  integrated + discrete GPU pair — are unit-tested and run on the
+  `macos-15-intel` runner, but a VM's virtual SMC reports little. The key table
+  (from the Stats project) needs checking against a physical Intel Mac.
+- **Intel Macs have no clock sensors.** There is no unprivileged per-core
+  frequency on Intel macOS (no DVFS residency, no MSR access without a kext).
 - **The TUI is only partly verified.** `sensorview top` has now been run on a
   real Windows console — rendering, `q`/`Esc`/`Ctrl-C`, and panic-hook terminal
   restoration under `panic = "abort"` all check out (see below). Two things
@@ -157,7 +165,7 @@ missed:
 
 ## Code quality
 
-- **~95 `unsafe` FFI blocks in the macOS backend have not been audited
+- **~115 `unsafe` FFI blocks in the macOS backend have not been audited
   line-by-line.** They are all read-only IOKit/Mach calls and each private-API
   signature is documented beside its declaration, but "written carefully" is not
   "audited", and a wrong signature is undefined behaviour.

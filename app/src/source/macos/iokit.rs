@@ -86,8 +86,12 @@ impl Drop for IoObject {
 /// Every service matching an IOKit class name, e.g. `"AppleSmartBattery"`.
 ///
 /// Returns an empty vec if the class does not exist on this machine — which is
-/// the normal case for plenty of classes (no fans on a MacBook Air, no
-/// `AppleSMC` at all on M-series).
+/// the normal case for plenty of classes (no `AppleSMBIOS` on Apple Silicon,
+/// no `AppleSmartBattery` on a desktop).
+///
+/// Matches subclasses too: on M-series the SMC is `AppleSMCKeysEndpoint`, and
+/// asking for `AppleSMC` finds it. Use [`object_class`] when the exact class
+/// matters.
 pub fn matching_services(class: &str) -> Vec<IoObject> {
     let Ok(cname) = std::ffi::CString::new(class) else {
         return Vec::new();
@@ -303,7 +307,7 @@ mod tests {
         assert!(matching_services("SensorViewNoSuchClass").is_empty());
     }
 
-    /// AppleSMC is absent on Apple Silicon; make sure asking for it is benign.
+    /// Asking for a property that doesn't exist must be `None`, never a panic.
     #[test]
     fn missing_property_yields_none() {
         let services = matching_services("IOPlatformExpertDevice");

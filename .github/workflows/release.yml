@@ -144,7 +144,16 @@ jobs:
             formats: deb
             artifacts: |
               app/target/release/*.deb
+          # Both macOS legs glob `*.dmg`, which is safe for the same reason
+          # as the two Linux legs: cargo-packager names the image by
+          # architecture (`_aarch64.dmg` vs `_x64.dmg`).
           - platform: macos-latest
+            os: macos
+            formats: dmg
+            artifacts: |
+              app/target/release/*.dmg
+          # Intel Macs — built natively; see the note in ci.yml.
+          - platform: macos-15-intel
             os: macos
             formats: dmg
             artifacts: |
@@ -154,7 +163,7 @@ jobs:
       run:
         working-directory: app
     steps:
-      # Explicitly the tag, so all three legs build the identical commit even if
+      # Explicitly the tag, so every leg builds the identical commit even if
       # master moves while the matrix is running.
       - uses: actions/checkout@v5
         with:
@@ -322,7 +331,7 @@ jobs:
 
       # tag_name is explicit: on a manual run the workflow's own ref is a
       # branch, so the action would otherwise attach the release to the wrong
-      # thing. All three legs target the same release and the action merges
+      # thing. All legs target the same release and the action merges
       # their artifacts into it.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -339,7 +348,8 @@ jobs:
             |---|---|---|
             | Windows | `SensorView_*_x64-setup.exe` | Installer |
             | Windows | `SensorView-*-portable.exe` | Single file, no install — see below |
-            | macOS (Apple Silicon) | `*.dmg` | Unsigned; System Settings → Privacy & Security → Open Anyway |
+            | macOS (Apple Silicon) | `*_aarch64.dmg` | Unsigned; System Settings → Privacy & Security → Open Anyway |
+            | macOS (Intel) | `*_x64.dmg` | Unsigned, as above |
             | Linux (x86-64) | `*_amd64.deb` / `*.AppImage` | Needs glibc 2.39+ |
             | Linux (arm64) | `*_arm64.deb` | Pi 5, Ampere/Graviton, Snapdragon X |
 
