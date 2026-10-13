@@ -27,9 +27,26 @@ pub fn format_value(value: Option<f32>, t: SensorType) -> String {
     }
 }
 
+/// A cache size as macOS and HWiNFO print it: whole megabytes when it is a
+/// multiple of one, kilobytes otherwise (an Intel core's 256 KB L2).
+pub fn cache_size(kb: u32) -> String {
+    if kb >= 1024 && kb.is_multiple_of(1024) {
+        format!("{} MB", kb / 1024)
+    } else {
+        format!("{kb} KB")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_sizes_use_the_largest_exact_unit() {
+        assert_eq!(cache_size(16 * 1024), "16 MB");
+        assert_eq!(cache_size(256), "256 KB");
+        assert_eq!(cache_size(1536), "1536 KB");
+    }
 
     #[test]
     fn missing_readings_render_as_an_em_dash() {

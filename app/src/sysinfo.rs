@@ -235,7 +235,7 @@ fn intel_codename(family: u32, model: u32) -> &'static str {
 /// A code the table does not know is reported as `Unknown (type 0x??)` rather
 /// than guessed at: the raw code is what lets someone look it up, and DMTF
 /// assigns new ones as memory generations ship.
-#[allow(dead_code)] // Only reachable from the Windows WMI path.
+#[allow(dead_code)] // Reachable from the Windows WMI and Intel-Mac SMBIOS paths.
 fn smbios_memory_type(code: u32) -> String {
     let name = match code {
         0x01 | 0x02 => "Unknown", // "Other" and "Unknown" are both non-answers.
@@ -296,6 +296,14 @@ pub struct BoardInfo {
     pub manufacturer: String,
     pub bios_version: String,
     pub bios_date: String,
+    /// Model identifier where it differs from `product` — a Mac's
+    /// `"Mac17,3"` behind the marketing name. Empty elsewhere.
+    pub model_id: String,
+    /// Logic-board identifier (`"J813"` on a Mac). Empty elsewhere.
+    pub board_id: String,
+    /// Platform controller / SoC, where one can be named without a PCI
+    /// enumeration (Apple Silicon: `"Apple M5 (T8142)"`).
+    pub chipset: String,
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -334,6 +342,77 @@ pub struct OsInfo {
     pub arch: String,
     pub uefi_boot: Option<bool>,
     pub secure_boot: Option<bool>,
+    /// macOS System Integrity Protection (`None` on other platforms).
+    pub sip_enabled: Option<bool>,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct DisplayInfo {
+    pub name: String,
+    pub built_in: bool,
+    pub main: bool,
+    /// The panel's native pixels.
+    pub width_px: Option<u32>,
+    pub height_px: Option<u32>,
+    /// The "looks like" size in points, when HiDPI scaling makes it differ
+    /// from the pixel size.
+    pub width_pt: Option<u32>,
+    pub height_pt: Option<u32>,
+    pub refresh_hz: Option<f64>,
+    pub diagonal_in: Option<f64>,
+}
+
+impl DisplayInfo {
+    /// `"2560 × 1664 (looks like 1280 × 832) @ 60 Hz"`, omitting what's unknown.
+    pub fn mode_text(&self) -> String {
+        let mut out = String::new();
+        if let (Some(w), Some(h)) = (self.width_px, self.height_px) {
+            out.push_str(&format!("{w} × {h}"));
+        }
+        if let (Some(w), Some(h)) = (self.width_pt, self.height_pt) {
+            out.push_str(&format!(" (looks like {w} × {h})"));
+        }
+        if let Some(hz) = self.refresh_hz {
+            out.push_str(&format!(" @ {hz:.0} Hz"));
+        }
+        out.trim().to_string()
+    }
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct BatteryInfo {
+    pub design_capacity_mah: Option<u32>,
+    pub full_charge_capacity_mah: Option<u32>,
+    pub cycle_count: Option<u32>,
+    /// The cycle count the cell is rated for.
+    pub design_cycle_count: Option<u32>,
+    /// Full-charge capacity as a percentage of design capacity.
+    pub health_pct: Option<f64>,
+    pub charge_pct: Option<f64>,
+    pub charging: Option<bool>,
+    pub external_power: Option<bool>,
+    pub adapter_watts: Option<u32>,
+    /// The fuel-gauge chip (`"bq40z651"`), which is what the firmware names.
+    pub gauge: String,
+}
+
+impl BatteryInfo {
+    /// `"AC (90 W adapter), not charging"` / `"Battery"`.
+    pub fn power_source_text(&self) -> String {
+        match self.external_power {
+            Some(true) => {
+                let adapter = self.adapter_watts.map(|w| format!(" ({w} W adapter)")).unwrap_or_default();
+                let state = match self.charging {
+                    Some(true) => ", charging",
+                    Some(false) => ", not charging",
+                    None => "",
+                };
+                format!("AC{adapter}{state}")
+            }
+            Some(false) => "Battery".to_string(),
+            None => String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -347,6 +426,11 @@ pub struct SystemInfo {
     pub gpus: Vec<GpuInfo>,
     pub drives: Vec<DriveInfo>,
     pub os: OsInfo,
+    /// Memory is on-package and shared with the GPU (Apple Silicon), so
+    /// channel counts and DIMM slots don't apply.
+    pub memory_unified: bool,
+    pub displays: Vec<DisplayInfo>,
+    pub battery: Option<BatteryInfo>,
 }
 
 /// Shared handle: `None` until the background query completes.
@@ -764,12 +848,18 @@ fn read_secure_boot() -> Option<bool> {
 
 #[cfg(target_os = "macos")]
 fn query() -> SystemInfo {
+    use crate::source::macos::{display, dvfs, sysprofile};
+
     let (cpuid, vendor, codename) = cpuid_info();
+    // Decided from the hardware, not the build target: an x86_64 build under
+    // Rosetta is still on an Apple Silicon machine (see `is_apple_silicon`).
+    let arm = is_apple_silicon();
 
     // Apple Silicon is heterogeneous: perflevel0 is the fast cluster (named
     // "Performance" through M4, "Super" on M5 — read the name, don't hardcode
     // it) and perflevel1 the efficiency cluster. Sum both for the core count,
     // and report the layout in `socket` since there is no socket to speak of.
+    // Intel Macs publish a single perflevel (or none), which is no "layout".
     let mut cluster_desc = Vec::new();
     let mut physical = 0u32;
     for level in 0..4 {
@@ -783,106 +873,157 @@ fn query() -> SystemInfo {
     }
     // Fall back to the flat count on any Mac that doesn't publish perflevels.
     let cores = if physical > 0 { Some(physical) } else { sysctl_u64("hw.physicalcpu").map(|v| v as u32) };
+    let socket = if arm {
+        (!cluster_desc.is_empty()).then(|| cluster_desc.join(" + "))
+    } else {
+        sysctl_u64("hw.packages").map(|n| if n == 1 { "1 package".to_string() } else { format!("{n} packages") })
+    };
 
     let total_memory_gb = sysctl_u64("hw.memsize").map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0));
 
-    // The SoC is soldered, so there are no per-DIMM SPD entries to enumerate;
-    // present the unified memory as a single honest module.
-    let memory_modules = total_memory_gb
-        .map(|gb| {
-            vec![MemoryModule {
-                bank: "Unified Memory".into(),
-                manufacturer: "Apple".into(),
-                capacity_gb: gb,
-                memory_type: "LPDDR (on-package)".into(),
-                ..Default::default()
-            }]
-        })
-        .unwrap_or_default();
+    // Intel Macs carry a real SMBIOS table; Apple Silicon has none.
+    let smbios_table = if arm { None } else { sysprofile::smbios_table() };
+    let smbios = smbios_table.as_deref().map(crate::smbios::parse).unwrap_or_default();
 
-    // The integrated GPU shares the SoC; name it after the chip and its core
-    // count rather than inventing a discrete-adapter identity.
-    let chip = sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
-    let (gpu_cores, metal_driver) = crate::source::macos::sysprofile::gpu_identity();
-    let gpus = if chip.is_empty() {
-        Vec::new()
+    let memory_modules = if arm {
+        // The SoC's memory is on-package, so there are no per-DIMM SPD
+        // entries; present it as one module, with the technology and vendor
+        // iBoot recorded when it trained the DRAM.
+        let (dram_type, dram_vendor) = sysprofile::memory_identity();
+        total_memory_gb
+            .map(|gb| {
+                vec![MemoryModule {
+                    bank: "Unified Memory".into(),
+                    manufacturer: dram_vendor.unwrap_or_default(),
+                    capacity_gb: gb,
+                    memory_type: dram_type.unwrap_or_else(|| "LPDDR".into()),
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default()
     } else {
-        let name = match gpu_cores {
-            Some(cores) => format!("{chip} GPU ({cores} cores)"),
-            None => format!("{chip} GPU"),
-        };
-        vec![GpuInfo {
-            name,
-            // Unified memory — there is no separate VRAM pool to report, and
-            // quoting total system RAM here would be misleading.
-            vram_gb: None,
-            driver_version: metal_driver.unwrap_or_default(),
-        }]
+        crate::smbios::memory_devices(&smbios)
+            .into_iter()
+            .map(|m| MemoryModule {
+                bank: match (m.bank, m.locator) {
+                    (Some(b), Some(l)) => format!("{b} / {l}"),
+                    (b, l) => b.or(l).unwrap_or_default(),
+                },
+                manufacturer: m.manufacturer.unwrap_or_default(),
+                part_number: m.part_number.unwrap_or_default(),
+                capacity_gb: m.size_mb as f64 / 1024.0,
+                speed_mts: m.speed_mts,
+                configured_speed_mts: m.configured_speed_mts,
+                voltage_mv: m.configured_voltage_mv,
+                memory_type: smbios_memory_type(u32::from(m.memory_type)),
+            })
+            .collect()
     };
 
-    // Internal SSD(s), so the Summary's Drives panel isn't blank.
-    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-    let drives = crate::source::macos::sysprofile::drives()
-        .into_iter()
-        .map(|(model, bytes)| DriveInfo {
-            model,
-            interface: "NVMe".into(),
-            size_gb: bytes.map(|b| b as f64 / GB),
-        })
-        .collect();
+    let chip = sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
+    let gpus = if arm {
+        // The integrated GPU shares the SoC; name it after the chip and its
+        // core count rather than inventing a discrete-adapter identity.
+        let (gpu_cores, metal_driver) = sysprofile::gpu_identity();
+        if chip.is_empty() {
+            Vec::new()
+        } else {
+            let name = match gpu_cores {
+                Some(cores) => format!("{chip} GPU ({cores} cores)"),
+                None => format!("{chip} GPU"),
+            };
+            vec![GpuInfo {
+                name,
+                // Unified memory — there is no separate VRAM pool to report,
+                // and quoting total system RAM here would be misleading.
+                vram_gb: None,
+                driver_version: metal_driver.unwrap_or_default(),
+            }]
+        }
+    } else {
+        sysprofile::pci_gpus()
+            .into_iter()
+            .map(|(name, vram_mb)| GpuInfo {
+                name,
+                vram_gb: vram_mb.map(|mb| mb as f64 / 1024.0),
+                driver_version: String::new(),
+            })
+            .collect()
+    };
 
-    // Performance-cluster DVFS states, for the Base/Max Clock rows.
-    let p_states =
-        crate::source::macos::dvfs::frequencies_mhz(crate::source::macos::dvfs::Block::Pcpu);
+    let (base_clock_mhz, max_clock_mhz) = if arm {
+        // There is no fixed "base clock" on Apple Silicon; the closest honest
+        // equivalents are the bottom and top of the performance cluster's
+        // DVFS table.
+        let p_states = dvfs::frequencies_mhz(dvfs::Block::Pcpu);
+        (p_states.first().map(|mhz| *mhz as u32), p_states.last().map(|mhz| *mhz as u32))
+    } else {
+        // Intel publishes the nominal frequency; `_max` is the same figure on
+        // most Macs (turbo isn't reported), so it is only kept when higher.
+        let base = sysctl_u64("hw.cpufrequency").map(|hz| (hz / 1_000_000) as u32);
+        let max = sysctl_u64("hw.cpufrequency_max").map(|hz| (hz / 1_000_000) as u32);
+        (base, max.filter(|m| Some(*m) > base).or(base))
+    };
 
+    let bios = crate::smbios::bios(&smbios).unwrap_or_default();
+    let model_id = sysctl_string("hw.model").unwrap_or_default();
     let os_version = sysctl_string("kern.osproductversion").unwrap_or_default();
 
     SystemInfo {
         computer_name: sysctl_string("kern.hostname").unwrap_or_default(),
         user_name: std::env::var("USER").unwrap_or_default(),
         cpu: CpuInfo {
-            name: chip,
+            name: chip.clone(),
             cores,
-            // Apple Silicon has no SMT: one thread per physical core.
+            // One thread per core on Apple Silicon (no SMT); Intel parts
+            // report their Hyper-Threading count here.
             threads: sysctl_u64("hw.logicalcpu").map(|v| v as u32),
-            // There is no fixed "base clock" on Apple Silicon; the closest
-            // honest equivalents are the bottom and top of the performance
-            // cluster's DVFS table.
-            base_clock_mhz: p_states.first().map(|mhz| *mhz as u32),
-            max_clock_mhz: p_states.last().map(|mhz| *mhz as u32),
-            // hw.l2cachesize reports the *efficiency* cluster (6 MB here).
-            // The headline figure is the performance cluster's L2
-            // (hw.perflevel0.l2cachesize, 16 MB), so prefer that.
+            base_clock_mhz,
+            max_clock_mhz,
+            // hw.l2cachesize reports the *efficiency* cluster on Apple
+            // Silicon (6 MB on M5). The headline figure is the performance
+            // cluster's L2 (hw.perflevel0.l2cachesize, 16 MB), so prefer it.
             l2_kb: sysctl_u64("hw.perflevel0.l2cachesize")
                 .or_else(|| sysctl_u64("hw.l2cachesize"))
                 .map(|b| (b / 1024) as u32),
-            // Apple Silicon has no per-core L3; the system-level cache is not
-            // published anywhere readable, so this stays honestly blank.
-            l3_kb: None,
-            socket: (!cluster_desc.is_empty()).then(|| cluster_desc.join(" + ")),
+            // Intel publishes its L3. Apple Silicon's system-level cache is
+            // not published anywhere readable, so it stays honestly blank.
+            l3_kb: sysctl_u64("hw.l3cachesize").filter(|b| *b > 0).map(|b| (b / 1024) as u32),
+            socket,
             features: cpu_features(),
             cpuid,
             vendor,
-            codename,
+            // Apple Silicon has no CPUID codename; Apple's part number for
+            // the die ("T8142") is the closest equivalent.
+            codename: if arm { sysprofile::soc_part().unwrap_or(codename) } else { codename },
         },
         board: BoardInfo {
             // Prefer the marketing name ("MacBook Air (13-inch, M5)") over the
-            // bare board id ("Mac17,3"), which is already shown as the codename.
-            product: crate::source::macos::sysprofile::product_name()
-                .or_else(|| sysctl_string("hw.model"))
-                .unwrap_or_default(),
+            // bare model id ("Mac17,3"), which gets its own row.
+            product: sysprofile::product_name().unwrap_or_else(|| model_id.clone()),
             manufacturer: "Apple Inc.".into(),
             // Apple Silicon boots via iBoot, so the closest thing to a BIOS
-            // version is the boot firmware revision.
-            bios_version: crate::source::macos::sysprofile::firmware_version().unwrap_or_default(),
-            // No firmware build date is published anywhere in IOKit; leave it
-            // blank rather than guessing from the version string.
-            bios_date: String::new(),
+            // version is the boot firmware revision; Intel Macs have a real
+            // EFI firmware version and date in SMBIOS type 0.
+            bios_version: if arm {
+                sysprofile::firmware_version().unwrap_or_default()
+            } else {
+                bios.version.unwrap_or_default()
+            },
+            // Apple Silicon publishes no firmware build date anywhere in
+            // IOKit; leave it blank rather than guessing from the version.
+            bios_date: bios.date.unwrap_or_default(),
+            board_id: if arm { sysprofile::board_id().unwrap_or_default() } else { String::new() },
+            chipset: match (arm, sysprofile::soc_part()) {
+                (true, Some(part)) if !chip.is_empty() => format!("{chip} ({part})"),
+                _ => String::new(),
+            },
+            model_id,
         },
         memory_modules,
         total_memory_gb,
         gpus,
-        drives,
+        drives: sysprofile::drives(),
         os: OsInfo {
             caption: if os_version.is_empty() {
                 "macOS".into()
@@ -891,12 +1032,17 @@ fn query() -> SystemInfo {
             },
             build: sysctl_string("kern.osversion").unwrap_or_default(),
             arch: std::env::consts::ARCH.to_string(),
-            // Apple Silicon boots via iBoot, not UEFI, and Secure Boot state
-            // lives in a different subsystem — leave both indeterminate rather
-            // than asserting something false.
-            uefi_boot: None,
-            secure_boot: None,
+            // Intel Macs boot EFI firmware. Apple Silicon boots via iBoot,
+            // which is not UEFI, so that one stays indeterminate.
+            uefi_boot: if arm { None } else { Some(true) },
+            // Apple Silicon records whether iBoot enforced a verified boot
+            // chain; Intel/T2 Macs keep that in the T2 and don't publish it.
+            secure_boot: if arm { sysprofile::secure_boot() } else { None },
+            sip_enabled: sysprofile::sip_enabled(),
         },
+        memory_unified: arm,
+        displays: display::displays(),
+        battery: sysprofile::battery(),
     }
 }
 

@@ -14,41 +14,10 @@ pub fn write_report(tree: &[Hardware], info: Option<&SystemInfo>) -> Result<Path
     out.push_str(&format!("Generated: {:?}\n", std::time::SystemTime::now()));
     out.push_str("\n================ SYSTEM ================\n");
     if let Some(i) = info {
-        out.push_str(&format!("Computer:  {}\n", i.computer_name));
-        out.push_str(&format!("User:      {}\n", i.user_name));
-        out.push_str(&format!("CPU:       {}\n", i.cpu.name));
-        out.push_str(&format!(
-            "Board:     {} {}\n",
-            i.board.manufacturer, i.board.product
-        ));
-        out.push_str(&format!(
-            "BIOS:      {} ({})\n",
-            i.board.bios_version, i.board.bios_date
-        ));
-        out.push_str(&format!(
-            "OS:        {} build {} ({})\n",
-            i.os.caption, i.os.build, i.os.arch
-        ));
-        for m in &i.memory_modules {
-            out.push_str(&format!(
-                "DIMM:      {} {} {:.0} GB @ {} MT/s\n",
-                m.bank,
-                m.part_number,
-                m.capacity_gb,
-                m.configured_speed_mts.or(m.speed_mts).unwrap_or(0)
-            ));
-        }
-        for g in &i.gpus {
-            out.push_str(&format!("GPU:       {}\n", g.name));
-        }
-        for d in &i.drives {
-            out.push_str(&format!(
-                "Drive:     {} [{}] {:.0} GB\n",
-                d.model,
-                d.interface,
-                d.size_gb.unwrap_or(0.0)
-            ));
-        }
+        // The same text `sensorview info` prints, so the report and the CLI
+        // can't drift apart as the System Summary grows.
+        out.push_str(&crate::cli::render::info_text(i));
+        out.push('\n');
     } else {
         out.push_str("(system info not yet available)\n");
     }

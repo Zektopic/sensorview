@@ -30,6 +30,7 @@
 //! by unit tests of the decoder rather than by live hardware.
 
 pub mod battery;
+pub mod display;
 pub mod dvfs;
 pub mod dynlib;
 pub mod freq;

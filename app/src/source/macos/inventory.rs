@@ -1,8 +1,10 @@
-//! Slow-lane inventory for macOS: internal storage identity and capacity.
+//! Slow-lane inventory for macOS: internal storage identity and capacity,
+//! and — on Intel Macs only — the SMBIOS table for the Hex Viewer.
 //!
 //! Apple Silicon has no ACPI or SMBIOS tables (the firmware describes hardware
-//! with an ARM device tree), so unlike Windows and Linux there is nothing here
-//! for the Hex Viewer to dump — `FirmwareTables` is deliberately not used.
+//! with an ARM device tree), so there is nothing for the Hex Viewer to dump
+//! there. Intel Macs publish their DMI table through `AppleSMBIOS`, which
+//! needs no privilege, unlike `/dev/mem` on other Unixes.
 //!
 //! Scope limit worth being explicit about: this reports drive **identity** from
 //! IOKit, not the full NVMe Health Information Log (log page 0x02). Apple's
@@ -13,6 +15,7 @@
 //! (`NAND CH0 temp`) by the fast lane.
 
 use crate::inventory::{Inventory, InventorySource};
+use crate::model::hexblob::{HexBlob, HexRegion, HexSource, RegionKind};
 use crate::model::storage::{HealthStatus, StorageHealth, StorageProtocol};
 
 use super::iokit::{self, dict_i64, dict_string};
@@ -25,8 +28,37 @@ impl InventorySource for MacInventory {
     }
 
     fn collect(&mut self) -> Inventory {
-        Inventory { storage: collect_storage(), ..Default::default() }
+        Inventory { storage: collect_storage(), hex: smbios_hex(), ..Default::default() }
     }
+}
+
+/// The Intel-Mac DMI table as a Hex Viewer blob, one region per structure.
+///
+/// Unlike Windows' RSMB blob there is no `RawSMBIOSData` header in front of
+/// it: the property *is* the structure table.
+fn smbios_hex() -> Vec<HexBlob> {
+    let Some(table) = super::sysprofile::smbios_table() else {
+        return Vec::new();
+    };
+    let regions = structure_regions(&table);
+    vec![HexBlob::new(HexSource::Smbios { version: "(Intel Mac)".into() }, 0, table).with_regions(regions)]
+}
+
+fn structure_regions(table: &[u8]) -> Vec<HexRegion> {
+    let mut regions = Vec::new();
+    let base = table.as_ptr() as usize;
+    for s in crate::smbios::parse(table) {
+        let start = s.data.as_ptr() as usize - base;
+        regions.push(HexRegion {
+            start,
+            len: s.data.len(),
+            label: format!("SMBIOS type {} (handle {:#06x})", s.kind, s.handle),
+            kind: RegionKind::Payload,
+        });
+        regions.push(HexRegion { start, len: 1, label: "Type".into(), kind: RegionKind::Identity });
+        regions.push(HexRegion { start: start + 1, len: 1, label: "Length".into(), kind: RegionKind::Length });
+    }
+    regions
 }
 
 fn collect_storage() -> Vec<StorageHealth> {
@@ -119,6 +151,16 @@ mod tests {
             return crate::source::macos::absent("whole-media size for the NVMe controller");
         };
         assert!(bytes > 1_000_000_000, "capacity {bytes} bytes is implausibly small for a disk");
+    }
+
+    #[test]
+    fn smbios_regions_start_at_each_structure() {
+        // Two structures: type 1 (no strings) and the end marker.
+        let table = [1u8, 4, 0, 0, 0, 0, 127, 4, 1, 0, 0, 0];
+        let regions = structure_regions(&table);
+        let payloads: Vec<_> =
+            regions.iter().filter(|r| r.kind == RegionKind::Payload).map(|r| (r.start, r.len)).collect();
+        assert_eq!(payloads, vec![(0, 4), (6, 4)]);
     }
 
     /// Health fields are deliberately unset; this pins that down so nobody

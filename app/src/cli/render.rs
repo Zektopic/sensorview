@@ -148,7 +148,10 @@ pub fn info_text(i: &SystemInfo) -> String {
     // mutable borrow for the whole body, blocking the section headers.
     fn row(out: &mut String, k: &str, v: &str) {
         if !v.is_empty() {
-            out.push_str(&format!("  {k:<16}{v}\n"));
+            // Labels are mostly short, but display and memory-bank names are
+            // data; keep at least one space between label and value.
+            let width = 16.max(k.chars().count() + 1);
+            out.push_str(&format!("  {k:<width$}{v}\n"));
         }
     }
     let mut out = String::new();
@@ -158,12 +161,21 @@ pub fn info_text(i: &SystemInfo) -> String {
         };
     }
 
+    let yes_no = |v: Option<bool>| match v {
+        Some(true) => "Enabled".to_string(),
+        Some(false) => "Disabled".to_string(),
+        None => String::new(),
+    };
+
     out.push_str("System\n");
     row!("Computer", &i.computer_name);
     row!("User", &i.user_name);
     row!("OS", &i.os.caption);
     row!("Build", &i.os.build);
     row!("Architecture", &i.os.arch);
+    row!("UEFI Boot", &yes_no(i.os.uefi_boot));
+    row!("Secure Boot", &yes_no(i.os.secure_boot));
+    row!("SIP", &yes_no(i.os.sip_enabled));
 
     out.push_str("\nCPU\n");
     row!("Name", &i.cpu.name);
@@ -174,32 +186,76 @@ pub fn info_text(i: &SystemInfo) -> String {
     if let Some(layout) = &i.cpu.socket {
         row!("Layout", layout);
     }
-    if let (Some(base), Some(max)) = (i.cpu.base_clock_mhz, i.cpu.max_clock_mhz) {
-        row!("Clock", &format!("{base}–{max} MHz"));
+    match (i.cpu.base_clock_mhz, i.cpu.max_clock_mhz) {
+        (Some(base), Some(max)) if max > base => row!("Clock", &format!("{base}–{max} MHz")),
+        (Some(base), _) => row!("Clock", &format!("{base} MHz")),
+        _ => {}
     }
     row!("Codename", &i.cpu.codename);
+    row!("CPUID", &i.cpu.cpuid);
     row!("Vendor", &i.cpu.vendor);
     if let Some(kb) = i.cpu.l2_kb {
-        row!("L2 Cache", &format!("{} MB", kb / 1024));
+        row!("L2 Cache", &crate::format::cache_size(kb));
     }
+    if let Some(kb) = i.cpu.l3_kb {
+        row!("L3 Cache", &crate::format::cache_size(kb));
+    }
+    let features: Vec<&str> = i.cpu.features.iter().filter(|f| f.1).map(|f| f.0).collect();
+    row!("Features", &features.join(" "));
 
     out.push_str("\nMotherboard\n");
-    row!("Product", &format!("{} {}", i.board.manufacturer, i.board.product));
+    row!("Product", format!("{} {}", i.board.manufacturer, i.board.product).trim());
+    row!("Model", &i.board.model_id);
+    row!("Board ID", &i.board.board_id);
+    row!("Chipset", &i.board.chipset);
     row!("Firmware", &i.board.bios_version);
+    row!("Firmware Date", &i.board.bios_date);
 
     out.push_str("\nMemory\n");
     if let Some(gb) = i.total_memory_gb {
-        row!("Total", &format!("{gb:.0} GB"));
+        let unified = if i.memory_unified { " (unified)" } else { "" };
+        row!("Total", &format!("{gb:.0} GB{unified}"));
     }
     for m in &i.memory_modules {
-        row!(&m.bank, &format!("{:.0} GB {}", m.capacity_gb, m.memory_type));
+        let speed = m
+            .configured_speed_mts
+            .or(m.speed_mts)
+            .map(|v| format!(" @ {v} MT/s"))
+            .unwrap_or_default();
+        let maker = [m.manufacturer.as_str(), m.part_number.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let maker = if maker.is_empty() { String::new() } else { format!(" — {maker}") };
+        row!(&m.bank, &format!("{:.0} GB {}{speed}{maker}", m.capacity_gb, m.memory_type));
     }
 
     if !i.gpus.is_empty() {
         out.push_str("\nGPU\n");
         for g in &i.gpus {
             row!("Name", &g.name);
+            if let Some(vram) = g.vram_gb {
+                row!("VRAM", &format!("{vram:.0} GB"));
+            }
             row!("Driver", &g.driver_version);
+        }
+    }
+
+    if !i.displays.is_empty() {
+        out.push_str("\nDisplays\n");
+        for d in &i.displays {
+            let mut desc = d.mode_text();
+            if let Some(inches) = d.diagonal_in {
+                desc.push_str(&format!(", {inches:.1}\""));
+            }
+            let tags: Vec<&str> =
+                [(d.built_in, "built-in"), (d.main, "main")].iter().filter(|t| t.0).map(|t| t.1).collect();
+            if !tags.is_empty() {
+                desc.push_str(&format!(" [{}]", tags.join(", ")));
+            }
+            row!(&d.name, &desc);
         }
     }
 
@@ -209,6 +265,26 @@ pub fn info_text(i: &SystemInfo) -> String {
             let size = d.size_gb.map(|g| format!(" {g:.0} GB")).unwrap_or_default();
             row!("Drive", &format!("{} [{}]{size}", d.model, d.interface));
         }
+    }
+
+    if let Some(b) = &i.battery {
+        out.push_str("\nBattery\n");
+        if let (Some(full), Some(design)) = (b.full_charge_capacity_mah, b.design_capacity_mah) {
+            row!("Capacity", &format!("{full} / {design} mAh"));
+        }
+        if let Some(h) = b.health_pct {
+            row!("Health", &format!("{h:.0} %"));
+        }
+        match (b.cycle_count, b.design_cycle_count) {
+            (Some(c), Some(d)) => row!("Cycles", &format!("{c} of {d}")),
+            (Some(c), None) => row!("Cycles", &c.to_string()),
+            _ => {}
+        }
+        if let Some(pct) = b.charge_pct {
+            row!("Charge", &format!("{pct:.0} %"));
+        }
+        row!("Power", &b.power_source_text());
+        row!("Gauge", &b.gauge);
     }
 
     out.trim_end().to_string()
