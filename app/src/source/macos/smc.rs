@@ -208,8 +208,75 @@ impl Smc {
         Some(fourcc_str(out.key))
     }
 
+    /// Every key starting with a two-character prefix, with its type.
+    ///
+    /// The SMC returns keys by index in ascending order (all 2,254 on an M5
+    /// are strictly sorted), so the range can be found by binary search in a
+    /// dozen calls instead of walking every key — a full walk costs ~0.7 s,
+    /// which every one-shot CLI call and every GUI launch would pay. The
+    /// order is spot-checked first; if it ever isn't sorted, this falls back
+    /// to the full walk rather than silently missing keys.
+    pub fn keys_with_prefix(&mut self, prefix: &[u8; 2]) -> Vec<([u8; 4], KeyType)> {
+        let Some(count) = self.key_count() else {
+            return Vec::new();
+        };
+        let count = count.min(8192);
+        let in_range = |key: &[u8; 4]| key.starts_with(prefix);
+        if !self.index_looks_sorted(count) {
+            return self.all_keys().into_iter().filter(|(key, _)| in_range(key)).collect();
+        }
+
+        let target = fourcc(&[prefix[0], prefix[1], 0, 0]);
+        let (mut lo, mut hi) = (0u32, count);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let Some(key) = self.key_at(mid) else {
+                return self.all_keys().into_iter().filter(|(key, _)| in_range(key)).collect();
+            };
+            if fourcc(&key) < target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        let mut out = Vec::new();
+        for i in lo..count {
+            let Some(key) = self.key_at(i) else {
+                break;
+            };
+            if !in_range(&key) {
+                break;
+            }
+            if let Some(ty) = self.key_info(fourcc(&key)) {
+                out.push((key, ty));
+            }
+        }
+        out
+    }
+
+    /// Sample the index at evenly spaced points; sorted order is what makes
+    /// [`Self::keys_with_prefix`]'s binary search valid.
+    fn index_looks_sorted(&mut self, count: u32) -> bool {
+        const SAMPLES: u32 = 16;
+        let mut previous = 0u32;
+        for n in 0..SAMPLES {
+            let index = (u64::from(count.saturating_sub(1)) * u64::from(n) / u64::from(SAMPLES - 1)) as u32;
+            let Some(key) = self.key_at(index) else {
+                return false;
+            };
+            let key = fourcc(&key);
+            if key < previous {
+                return false;
+            }
+            previous = key;
+        }
+        true
+    }
+
     /// Every key the SMC publishes, with its type. A few thousand round trips
-    /// on Apple Silicon (~1–2 k keys), so callers do this once at startup.
+    /// (~0.7 s on an M5), so only diagnostics and the unsorted-index fallback
+    /// use it.
     pub fn all_keys(&mut self) -> Vec<([u8; 4], KeyType)> {
         let Some(count) = self.key_count() else {
             return Vec::new();
@@ -518,16 +585,14 @@ impl SmcSensors {
         let Some(smc) = this.smc.as_mut() else {
             return this;
         };
-
-        let keys = smc.all_keys();
-        this.key_count = keys.len();
-        let types: std::collections::HashMap<[u8; 4], KeyType> = keys.iter().copied().collect();
+        this.key_count = smc.key_count().unwrap_or(0) as usize;
 
         // A key qualifies if it exists, its type is one we decode correctly on
         // this generation, and its first reading is physically plausible —
         // which filters the many keys that exist but read as 0 or a sentinel.
-        let probe = |smc: &mut Smc, key: [u8; 4], sensor_type: SensorType| -> Option<Channel> {
-            let ty = *types.get(&key)?;
+        // Curated keys are looked up by name: one call each, no enumeration.
+        let probe = |smc: &mut Smc, key: [u8; 4], ty: Option<KeyType>, sensor_type: SensorType| -> Option<Channel> {
+            let ty = ty.or_else(|| smc.key_info(fourcc(&key)))?;
             if !trusted(arm, ty) {
                 return None;
             }
@@ -546,7 +611,7 @@ impl SmcSensors {
                 continue;
             }
             for (key, name) in expand(def) {
-                if let Some(channel) = probe(smc, key, def.sensor_type) {
+                if let Some(channel) = probe(smc, key, None, def.sensor_type) {
                     let key_str = String::from_utf8_lossy(&key).into_owned();
                     this.named.push(Named {
                         channel,
@@ -561,15 +626,17 @@ impl SmcSensors {
 
         if arm {
             for family in FAMILIES {
-                let mut members: Vec<[u8; 4]> = keys
-                    .iter()
-                    .map(|(key, _)| *key)
-                    .filter(|key| family.prefixes.iter().any(|p| key.starts_with(p.as_bytes())))
-                    .collect();
-                members.sort_unstable();
+                let mut members: Vec<([u8; 4], KeyType)> = Vec::new();
+                for prefix in family.prefixes {
+                    let Ok(prefix): Result<&[u8; 2], _> = prefix.as_bytes().try_into() else {
+                        continue;
+                    };
+                    members.extend(smc.keys_with_prefix(prefix));
+                }
+                members.sort_unstable_by_key(|(key, _)| *key);
                 let channels: Vec<Channel> = members
                     .into_iter()
-                    .filter_map(|key| probe(smc, key, SensorType::Temperature))
+                    .filter_map(|(key, ty)| probe(smc, key, Some(ty), SensorType::Temperature))
                     .collect();
                 if !channels.is_empty() {
                     this.aggregates.push(Aggregate {
@@ -584,9 +651,9 @@ impl SmcSensors {
 
         // Fans: `FNum` is a single byte on both generations. A fanless Mac
         // either lacks the key or reports 0.
-        let fan_count = types
-            .get(b"FNum")
-            .and_then(|ty| decode(*ty, &smc.read_raw(fourcc(b"FNum"), *ty)?))
+        let fan_count = smc
+            .key_info(fourcc(b"FNum"))
+            .and_then(|ty| decode(ty, &smc.read_raw(fourcc(b"FNum"), ty)?))
             .map(|n| n as u32)
             .unwrap_or(0)
             .min(8);
@@ -594,15 +661,16 @@ impl SmcSensors {
             let key = |suffix: &[u8; 2]| -> [u8; 4] { [b'F', b'0' + i as u8, suffix[0], suffix[1]] };
             // Fan speed can legitimately read 0 (stopped at idle), so only
             // the type matters here, not the first value.
-            let channel = |key: [u8; 4]| -> Option<Channel> {
-                let ty = *types.get(&key)?;
+            let mut channel = |key: [u8; 4]| -> Option<Channel> {
+                let ty = smc.key_info(fourcc(&key))?;
                 (trusted(arm, ty) && decode(ty, &[0u8; 32][..ty.size as usize]).is_some())
                     .then_some(Channel { key: fourcc(&key), ty })
             };
             let Some(actual) = channel(key(b"Ac")) else {
                 continue;
             };
-            this.fans.push(Fan { number: i + 1, actual, target: channel(key(b"Tg")) });
+            let target = channel(key(b"Tg"));
+            this.fans.push(Fan { number: i + 1, actual, target });
         }
 
         this
@@ -766,10 +834,41 @@ mod tests {
         let Some(mut smc) = Smc::open() else {
             return crate::source::macos::absent("AppleSMC user client");
         };
-        let count = smc.key_count().unwrap();
-        assert!(count > 10, "SMC reports only {count} keys");
-        let first = smc.key_at(0).expect("key 0");
-        assert!(first.iter().all(|c| c.is_ascii_graphic() || *c == b' '));
+        // A VM's virtual SMC can open yet publish little, or not support
+        // lookup by index; that is absence, not a decoding bug.
+        let Some(first) = smc.key_at(0) else {
+            return crate::source::macos::absent("SMC key lookup by index");
+        };
+        assert!(first.iter().all(|c| c.is_ascii_graphic() || *c == b' '), "key 0 is {first:?}");
+    }
+
+    /// The binary search must find exactly what a full walk finds. Run on
+    /// real hardware this pins the sorted-index assumption it relies on.
+    #[test]
+    fn prefix_search_matches_a_full_walk() {
+        let Some(mut smc) = Smc::open() else {
+            return crate::source::macos::absent("AppleSMC user client");
+        };
+        let all = smc.all_keys();
+        if all.is_empty() {
+            return crate::source::macos::absent("SMC key enumeration");
+        }
+        for prefix in [b"Tp", b"Te", b"Tg", b"F0", b"#K"] {
+            let walked: Vec<_> = all.iter().filter(|(k, _)| k.starts_with(prefix)).copied().collect();
+            assert_eq!(smc.keys_with_prefix(prefix), walked, "prefix {}", String::from_utf8_lossy(prefix));
+        }
+    }
+
+    #[test]
+    #[ignore = "diagnostic probe; run explicitly"]
+    fn time_startup() {
+        let t = std::time::Instant::now();
+        let sensors = SmcSensors::new();
+        println!("SmcSensors::new: {:?} ({})", t.elapsed(), sensors.describe());
+        let mut sensors = sensors;
+        let t = std::time::Instant::now();
+        let _ = sensors.sample();
+        println!("SmcSensors::sample: {:?}", t.elapsed());
     }
 
     #[test]

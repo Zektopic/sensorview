@@ -226,6 +226,22 @@ impl SensorSource for MacSource {
 
         let mut smc = self.smc.sample();
 
+        // DVFS clocks, IOReport power and SMC die temperatures for the GPU
+        // all describe Apple's integrated GPU, so they join that node only —
+        // never a discrete GPU on an Intel Mac. With no Apple GPU node (a VM,
+        // or a driver that published no statistics this tick) they stay on
+        // the SoC node, which is where that GPU physically is, rather than
+        // being dropped.
+        let mut gpus = gpu::collect();
+        let mut gpu_side = Vec::new();
+        gpu_side.append(&mut gpu_clocks);
+        gpu_side.append(&mut gpu_power);
+        gpu_side.append(&mut smc.gpu);
+        match gpus.iter_mut().find(|g| g.hardware_type == HardwareType::GpuApple) {
+            Some(apple) => apple.sensors.append(&mut gpu_side),
+            None => soc_power.append(&mut gpu_side),
+        }
+
         // The SMC's die-temperature aggregates lead the temperature block:
         // they are the headline figures, and the per-probe HID list after
         // them runs to dozens of rows.
@@ -252,19 +268,6 @@ impl SensorSource for MacSource {
             });
         }
 
-        // DVFS clocks, IOReport power and SMC die temperatures for the GPU
-        // all describe Apple's integrated GPU, so they join that node only —
-        // never a discrete GPU on an Intel Mac. If no node took them they
-        // fall through to the board node rather than being dropped.
-        let mut gpus = gpu::collect();
-        match gpus.iter_mut().find(|g| g.hardware_type == HardwareType::GpuApple) {
-            Some(apple) => {
-                apple.sensors.append(&mut gpu_clocks);
-                apple.sensors.append(&mut gpu_power);
-                apple.sensors.append(&mut smc.gpu);
-            }
-            None => smc.system.append(&mut smc.gpu),
-        }
         tree.extend(gpus);
 
         let mut memory_sensors = self.load.memory_sensors();

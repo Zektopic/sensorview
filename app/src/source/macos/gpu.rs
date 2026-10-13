@@ -131,7 +131,13 @@ pub fn collect() -> Vec<Hardware> {
         }
 
         let io_class = iokit::object_class(service.0).unwrap_or_default();
-        let hardware_type = vendor_of(&io_class);
+        // Apple is the only GPU vendor Apple Silicon can have. An unrecognised
+        // driver class there is Apple's too — a VM's paravirtualized GPU, or
+        // a future driver renamed away from "AGX".
+        let hardware_type = match vendor_of(&io_class) {
+            HardwareType::Unknown if crate::sysinfo::is_apple_silicon() => HardwareType::GpuApple,
+            vendor => vendor,
+        };
 
         // The marketing name sits on the accelerator for Apple GPUs and on
         // the parent PCI device for discrete ones, so search upward.

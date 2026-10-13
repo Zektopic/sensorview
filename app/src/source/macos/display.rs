@@ -198,8 +198,13 @@ mod tests {
             if let Some(hz) = d.refresh_hz {
                 assert!((20.0..=500.0).contains(&hz), "refresh {hz} Hz");
             }
-            if let Some(inches) = d.diagonal_in {
-                assert!((5.0..=120.0).contains(&inches), "diagonal {inches} in");
+            // A built-in panel's size comes from Apple's own firmware and must
+            // be sane. An external or virtual display's comes from its EDID,
+            // which can be anything, so it is only reported.
+            match d.diagonal_in {
+                Some(inches) if d.built_in => assert!((5.0..=40.0).contains(&inches), "diagonal {inches} in"),
+                Some(inches) => eprintln!("{}: EDID diagonal {inches:.1} in", d.name),
+                None => {}
             }
         }
     }

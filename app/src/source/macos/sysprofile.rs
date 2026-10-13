@@ -90,8 +90,22 @@ pub fn memory_identity() -> (Option<String>, Option<String>) {
 
 /// The SoC's part number, e.g. `"T8142"` for M5 — Apple's own name for the
 /// die, and the nearest thing Apple Silicon has to a CPU codename.
+///
+/// Only a value shaped like one (`T` or `S` plus digits) is returned: a VM's
+/// or an Intel Mac's device tree can carry something else under that name,
+/// and the callers fall back to the model id rather than show it.
 pub fn soc_part() -> Option<String> {
-    dt_string("IODeviceTree:/", "platform-name").map(|p| p.to_ascii_uppercase())
+    dt_string("IODeviceTree:/", "platform-name")
+        .map(|p| p.trim().to_ascii_uppercase())
+        .filter(|p| looks_like_soc_part(p))
+}
+
+pub fn looks_like_soc_part(p: &str) -> bool {
+    let mut chars = p.chars();
+    matches!(chars.next(), Some('T' | 'S'))
+        && p.len() >= 4
+        && p.len() <= 6
+        && chars.all(|c| c.is_ascii_digit())
 }
 
 /// The logic-board identifier, e.g. `"J813"`.
@@ -379,25 +393,32 @@ mod tests {
         assert_eq!(interface_label("USB", "External"), "USB, external");
     }
 
+    /// The CFData decode must yield clean text (no NUL padding, no
+    /// mojibake). What the text *says* is the machine's business — a VM may
+    /// report something other than an LPDDR generation.
     #[test]
-    fn memory_identity_names_a_dram_type() {
-        if !crate::sysinfo::is_apple_silicon() {
-            return crate::source::macos::absent("Apple Silicon device tree");
+    fn memory_identity_decodes_to_clean_text() {
+        let (kind, vendor) = memory_identity();
+        if kind.is_none() && vendor.is_none() {
+            return crate::source::macos::absent("/chosen dram-type and dram-vendor");
         }
-        let (kind, _vendor) = memory_identity();
-        let Some(kind) = kind else {
-            return crate::source::macos::absent("/chosen dram-type");
-        };
-        assert!(kind.contains("DDR"), "dram-type {kind} is not a DRAM technology");
+        for text in [kind, vendor].into_iter().flatten() {
+            assert!(!text.is_empty() && text.chars().all(|c| c.is_ascii_graphic() || c == ' '), "{text:?}");
+        }
     }
 
     #[test]
-    fn soc_part_looks_like_an_apple_part_number() {
-        let Some(part) = soc_part() else {
-            return crate::source::macos::absent("device-tree platform-name");
-        };
+    fn soc_part_numbers_are_recognised_and_junk_is_not() {
         // T8103 (M1) … T8142 (M5), T6000-series for Pro/Max.
-        assert!(part.starts_with('T') && part[1..].chars().all(|c| c.is_ascii_digit()), "{part}");
+        for good in ["T8103", "T8142", "T6031"] {
+            assert!(looks_like_soc_part(good), "{good}");
+        }
+        for bad in ["", "J813", "T81X2", "VMA2MACOSAP", "T"] {
+            assert!(!looks_like_soc_part(bad), "{bad}");
+        }
+        if let Some(part) = soc_part() {
+            assert!(looks_like_soc_part(&part));
+        }
     }
 
     #[test]
