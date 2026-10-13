@@ -28,7 +28,32 @@ serde_json = "1"
 dirs = "6"
 
 # --- GUI (optional: `--no-default-features --features cli` drops all of it) --
-eframe = { version = "0.35", optional = true }
+# Default features minus `winit/default`, which is the only thing in the tree
+# that turns on winit's `wayland-csd-adwaita` — and that feature draws the
+# Wayland title-bar text with ab_glyph → owned_ttf_parser → ttf-parser, which
+# is unmaintained (RUSTSEC-2026-0192, no patched release). winit is then
+# re-enabled below with its other defaults and the no-title CSD variant.
+eframe = { version = "0.35", optional = true, default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wayland",
+    "web_screen_reader",
+    "wgpu",
+    "x11",
+] }
+# winit's defaults are rwh_06, x11, wayland, wayland-dlopen and
+# wayland-csd-adwaita. eframe already enables rwh_06/x11/wayland; this restores
+# wayland-dlopen (no link-time libwayland dependency) and swaps the CSD for
+# `wayland-csd-adwaita-notitle`: the same Adwaita client-side decorations, minus
+# the title text, so no font parser is compiled in. Only GNOME on Wayland draws
+# client-side decorations, so that is the one place the title text goes away;
+# KDE/wlroots use server-side decorations, and macOS/Windows are unaffected
+# (these features are Linux-only inside winit). Revisit once egui moves to a
+# winit whose sctk-adwaita can render titles with skrifa (sctk-adwaita ≥ 0.11).
+winit = { version = "0.30.13", optional = true, default-features = false, features = [
+    "wayland-dlopen",
+    "wayland-csd-adwaita-notitle",
+] }
 egui_extras = { version = "0.35", optional = true }
 egui_tiles = { version = "0.16", features = ["serde"], optional = true }
 # Only used to decode the embedded window icon.
@@ -80,7 +105,7 @@ default = ["gui", "web", "push", "tui"]
 
 # The native window. Dropping it yields a headless binary for servers and
 # containers that never links the windowing stack.
-gui = ["dep:eframe", "dep:egui_extras", "dep:egui_tiles", "dep:image"]
+gui = ["dep:eframe", "dep:winit", "dep:egui_extras", "dep:egui_tiles", "dep:image"]
 # Push telemetry to an external collector (InfluxDB line protocol, JSON webhook).
 push = ["dep:ureq"]
 # `sensorview top` — a live terminal dashboard.
