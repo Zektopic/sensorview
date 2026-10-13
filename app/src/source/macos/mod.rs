@@ -1,16 +1,19 @@
-//! Native macOS (Apple Silicon) sensor backend.
+//! Native macOS sensor backend — Apple Silicon first, Intel where the same
+//! mechanisms reach.
 //!
 //! Unlike the Windows path, this needs **no sidecar process, no kernel driver
 //! and no elevation** — every source below is readable by an ordinary user:
 //!
-//! | Data                    | Mechanism                          |
-//! |-------------------------|------------------------------------|
-//! | Die temperatures        | `IOHIDEventSystemClient` (SPI)     |
-//! | CPU/GPU/ANE power       | `libIOReport` (SPI, dlopen'd)      |
-//! | CPU load, memory        | Mach `host_*` (public)             |
-//! | GPU utilisation/memory  | IOKit `IOAccelerator` (public)     |
-//! | SSD throughput          | IOKit `IOBlockStorageDriver`       |
-//! | Battery                 | IOKit `AppleSmartBattery`          |
+//! | Data                       | Mechanism                          | Apple Silicon | Intel |
+//! |----------------------------|------------------------------------|---------------|-------|
+//! | Die temperatures (per probe) | `IOHIDEventSystemClient` (SPI)   | yes           | few   |
+//! | CPU/GPU/ANE power          | `libIOReport` (SPI, dlopen'd)      | yes           | no    |
+//! | Clusters' clocks           | IOReport DVFS residency            | yes           | no    |
+//! | Fans, system/DC-in power, CPU/GPU die aggregates | `AppleSMC` user client | yes | yes (all temps, power, voltages) |
+//! | CPU load, memory           | Mach `host_*` (public)             | yes           | yes   |
+//! | GPU utilisation/memory     | IOKit `IOAccelerator` (public)     | yes           | yes, per GPU |
+//! | Disk throughput            | IOKit `IOBlockStorageDriver`       | yes           | yes   |
+//! | Battery                    | IOKit `AppleSmartBattery`          | yes           | yes   |
 //!
 //! Two of those are private API. That is fine for `.dmg` distribution and for
 //! notarization, but it rules out the Mac App Store, and Apple can change or
@@ -19,10 +22,12 @@
 //! degrades to producing no sensors, and [`SensorSource::diagnostics`] reports
 //! which subsystems resolved so the Settings dialog can explain a thin tree.
 //!
-//! `AppleSMC` is deliberately not used — it does not exist on M-series Macs
-//! (verified on an M5: `ioreg -n AppleSMC` matches nothing). Fan sensors would
-//! come from the same HID plane as temperatures on Macs that have fans; this
-//! machine is fanless, so that path is untested.
+//! The SMC *does* exist on M-series Macs, which this backend used to deny: it
+//! is registered as `AppleSMCKeysEndpoint`, a subclass of `AppleSMC`, so
+//! `ioreg -n AppleSMC` (an exact *name* match) finds nothing while
+//! `IOServiceMatching("AppleSMC")` finds it. See `smc.rs`. Fans are read from
+//! there; the M5 this was developed on is fanless, so the fan path is covered
+//! by unit tests of the decoder rather than by live hardware.
 
 pub mod battery;
 pub mod dvfs;
@@ -34,6 +39,7 @@ pub mod inventory;
 pub mod iokit;
 pub mod ioreport;
 pub mod load;
+pub mod smc;
 pub mod storage;
 pub mod sysprofile;
 
@@ -118,8 +124,14 @@ pub struct MacSource {
     hid: hid::HidSensors,
     energy: ioreport::EnergyReporter,
     clocks: freq::FrequencyReporter,
+    smc: smc::SmcSensors,
     load: load::LoadCollector,
     storage: storage::StorageCollector,
+    /// Apple Silicon hardware (decided at runtime; see `is_apple_silicon`).
+    arm: bool,
+    /// Name for the board-level node: the marketing name where the registry
+    /// has one, else the model identifier.
+    board_name: String,
     /// Cached at construction: which subsystems came up.
     report: String,
 }
@@ -129,6 +141,8 @@ impl MacSource {
         let hid = hid::HidSensors::new();
         let energy = ioreport::EnergyReporter::new();
         let clocks = freq::FrequencyReporter::new();
+        let smc = smc::SmcSensors::new();
+        let arm = crate::sysinfo::is_apple_silicon();
 
         // Record availability once, at startup, so the Settings dialog can say
         // *why* the tree is thin instead of silently showing fewer sensors.
@@ -149,17 +163,25 @@ impl MacSource {
             "IOReport DVFS residency (clocks): {}",
             if clocks.available() { "ok" } else { "unavailable — no clock sensors" }
         ));
+        lines.push(format!("AppleSMC (fans, board power): {}", smc.describe()));
         lines.push(
             "No kernel driver or elevation is required on macOS; all sensors are read via IOKit."
                 .to_string(),
         );
 
+        let board_name = sysprofile::product_name()
+            .or_else(|| crate::sysinfo::sysctl_string("hw.model"))
+            .unwrap_or_else(|| "Mac".to_string());
+
         Self {
             hid,
             energy,
             clocks,
+            smc,
             load: load::LoadCollector::new(),
             storage: storage::StorageCollector::new(),
+            arm,
+            board_name,
             report: lines.join("\n"),
         }
     }
@@ -201,17 +223,27 @@ impl SensorSource for MacSource {
             }
         }
 
+        let mut smc = self.smc.sample();
+
+        // The SMC's die-temperature aggregates lead the temperature block:
+        // they are the headline figures, and the per-probe HID list after
+        // them runs to dozens of rows.
         let mut soc_sensors = self.load.cpu_load_sensors();
         soc_sensors.append(&mut soc_clocks);
         soc_sensors.append(&mut soc_power);
+        soc_sensors.append(&mut smc.cpu);
         soc_sensors.extend(self.hid.temperatures());
         disambiguate(&mut soc_sensors);
 
         if !soc_sensors.is_empty() {
-            let name = crate::sysinfo::sysctl_string("machdep.cpu.brand_string")
-                .unwrap_or_else(|| "Apple Silicon".to_string());
+            let brand = crate::sysinfo::sysctl_string("machdep.cpu.brand_string");
+            let (identifier, name) = if self.arm {
+                ("/applesoc/0", brand.unwrap_or_else(|| "Apple Silicon".to_string()))
+            } else {
+                ("/intelcpu/0", brand.unwrap_or_else(|| "Intel CPU".to_string()))
+            };
             tree.push(Hardware {
-                identifier: "/applesoc/0".into(),
+                identifier: identifier.into(),
                 name,
                 hardware_type: HardwareType::Cpu,
                 sensors: soc_sensors,
@@ -219,20 +251,41 @@ impl SensorSource for MacSource {
             });
         }
 
-        if let Some(mut gpu) = gpu::collect() {
-            gpu.sensors.append(&mut gpu_clocks);
-            gpu.sensors.append(&mut gpu_power);
-            tree.push(gpu);
+        // DVFS clocks, IOReport power and SMC die temperatures for the GPU
+        // all describe Apple's integrated GPU, so they join that node only —
+        // never a discrete GPU on an Intel Mac. If no node took them they
+        // fall through to the board node rather than being dropped.
+        let mut gpus = gpu::collect();
+        match gpus.iter_mut().find(|g| g.hardware_type == HardwareType::GpuApple) {
+            Some(apple) => {
+                apple.sensors.append(&mut gpu_clocks);
+                apple.sensors.append(&mut gpu_power);
+                apple.sensors.append(&mut smc.gpu);
+            }
+            None => smc.system.append(&mut smc.gpu),
         }
+        tree.extend(gpus);
 
         let mut memory_sensors = self.load.memory_sensors();
         memory_sensors.append(&mut ram_power);
         if !memory_sensors.is_empty() {
             tree.push(Hardware {
                 identifier: "/ram/0".into(),
-                name: "Unified Memory".into(),
+                name: if self.arm { "Unified Memory" } else { "Memory" }.into(),
                 hardware_type: HardwareType::Ram,
                 sensors: memory_sensors,
+                sub_hardware: Vec::new(),
+            });
+        }
+
+        // Fans, total system power and the DC-in rail are properties of the
+        // machine, not of any one chip.
+        if !smc.system.is_empty() {
+            tree.push(Hardware {
+                identifier: "/mainboard/0".into(),
+                name: self.board_name.clone(),
+                hardware_type: HardwareType::Mainboard,
+                sensors: smc.system,
                 sub_hardware: Vec::new(),
             });
         }
@@ -414,5 +467,6 @@ mod tests {
         assert!(diag.engine_version.contains("macOS IOKit"));
         assert!(diag.driver_report.contains("IOHIDEventSystem"));
         assert!(diag.driver_report.contains("libIOReport"));
+        assert!(diag.driver_report.contains("AppleSMC"));
     }
 }

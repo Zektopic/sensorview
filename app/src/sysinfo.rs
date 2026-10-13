@@ -484,6 +484,19 @@ pub(crate) fn sysctl_u64(name: &str) -> Option<u64> {
     }
 }
 
+/// Whether this Mac is Apple Silicon **hardware**, whatever this binary was
+/// compiled for.
+///
+/// Decided at runtime, never with `cfg(target_arch)`: an x86_64 build runs
+/// under Rosetta on an M-series Mac and sees that machine's ARM registry —
+/// device tree, IOHID sensors, `flt `-typed SMC keys — not an Intel one.
+/// `hw.optional.arm64` is reported as 1 to translated processes too, and is
+/// absent on Intel Macs.
+#[cfg(target_os = "macos")]
+pub(crate) fn is_apple_silicon() -> bool {
+    sysctl_u64("hw.optional.arm64") == Some(1)
+}
+
 /// Synchronous `query()` for tests and diagnostics — `spawn_query` returns a
 /// handle that only fills in later, which is awkward to assert against.
 ///
