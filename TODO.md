@@ -159,9 +159,12 @@ missed:
   under a real Wayland/X11 session are unverified.
 - **macOS `.dmg` is unsigned and un-notarized.** Gatekeeper blocks it; users need
   System Settings → Privacy & Security → Open Anyway.
-- **`ttf-parser` is unmaintained** (RUSTSEC-2026-0192). It reaches us through
-  `ab_glyph` → egui, so it needs an upstream change. GUI-only: headless builds
-  do not contain it.
+- **Wayland title bars on GNOME show no title text.** `ttf-parser` is
+  unmaintained (RUSTSEC-2026-0192) and only reached us through winit's
+  `wayland-csd-adwaita` title rendering (`sctk-adwaita` → `ab_glyph`), so
+  winit now uses `wayland-csd-adwaita-notitle` (see `Cargo.toml`). Restore
+  titles once egui's winit can use `sctk-adwaita` ≥ 0.11, which renders them
+  with the maintained `skrifa`.
 
 ## Code quality
 
