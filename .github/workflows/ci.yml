@@ -34,7 +34,7 @@ jobs:
           # from 2027-04-17. Moving raises the floor from glibc 2.35 to 2.39,
           # so the Linux artifacts no longer run on Ubuntu 22.04 or Debian 12 —
           # stated in the README's Install section.
-          - platform: ubuntu-24.04
+          - platform: [self-hosted, manupa-hnx]
             os: linux
             formats: deb,appimage
           # arm64 Linux — Raspberry Pi 5, Ampere/Graviton servers, Snapdragon X
@@ -80,6 +80,9 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v5
+
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory '*'
 
       - name: Install Linux build dependencies
         if: matrix.os == 'linux'

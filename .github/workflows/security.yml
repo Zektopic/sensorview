@@ -21,12 +21,15 @@ permissions:
 jobs:
   audit:
     name: cargo audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, manupa-hnx]
     defaults:
       run:
         working-directory: app
     steps:
       - uses: actions/checkout@v5
+
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory '*'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

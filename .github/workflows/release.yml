@@ -35,7 +35,7 @@ jobs:
   # of the build matrix deliberately: three platforms racing to create the same
   # tag is a bug waiting to happen, and every leg must build the *same* commit.
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, manupa-hnx]
     permissions:
       contents: write
     outputs:
@@ -43,6 +43,9 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory '*'
 
       - name: Resolve the version
         id: resolve
@@ -125,7 +128,7 @@ jobs:
           # Pinned deliberately; ubuntu-22.04 is being retired (deprecation
           # from 2026-09-17). See the matching note in ci.yml for the glibc
           # 2.39 floor this puts on the .deb and .AppImage.
-          - platform: ubuntu-24.04
+          - platform: [self-hosted, manupa-hnx]
             os: linux
             formats: deb,appimage
             artifacts: |
@@ -168,6 +171,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory '*'
 
       - name: Install Linux build dependencies
         if: matrix.os == 'linux'
